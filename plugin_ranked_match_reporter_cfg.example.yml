@@ -1,0 +1,21 @@
+# RankedMatchReporterPlugin — example (copy to cfg/plugin_ranked_match_reporter_cfg.yml)
+
+Enabled: true
+LeagueId: gt3_ks
+ServerId: ff-circuit-gt3-ks
+
+# serv-brain ingest (see serv-brain/README.md)
+IngestUrl: http://127.0.0.1:8080/v1/races
+ApiKey: ""
+
+# true = log JSON only until ingest API exists
+DryRun: true
+
+MinimumDriversForRanked: 4
+ReportUncountedRaces: true
+
+PeakWindow:
+  Enabled: true
+  TimeZoneId: America/Sao_Paulo
+  StartLocal: "18:30"
+  EndLocal: "22:30"
