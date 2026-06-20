@@ -21,11 +21,20 @@ public class RankedMatchReporterConfiguration : IValidateConfiguration<RankedMat
     [YamlMember(Description = "League id sent to serv-brain ingest (e.g. gt3_ks)")]
     public string LeagueId { get; init; } = "gt3_ks";
 
+    [YamlMember(Description = "Human label used in rating notice chat (e.g. GT3 Ranked)")]
+    public string LeagueDisplayName { get; init; } = "GT3 Ranked";
+
+    [YamlMember(Description = "Private chat with ladder standing and last race rating when a driver joins")]
+    public bool SendRatingNoticeOnJoin { get; init; } = true;
+
+    [YamlMember(Description = "Private chat with ladder standing and last race rating at each session start")]
+    public bool SendRatingNoticeAtSessionStart { get; init; } = true;
+
     [YamlMember(Description = "Server id sent to ingest (e.g. ff-circuit-gt3-ks)")]
     public string ServerId { get; init; } = "unknown";
 
     [YamlMember(Description = "serv-brain ingest URL (POST /v1/races)")]
-    public string IngestUrl { get; init; } = "http://127.0.0.1:8080/v1/races";
+    public string IngestUrl { get; init; } = "http://127.0.0.1:10000/v1/races";
 
     [YamlMember(Description = "Bearer or X-Api-Key value for ingest (empty = no auth header)")]
     public string ApiKey { get; init; } = "";

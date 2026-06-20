@@ -16,10 +16,10 @@ namespace RankedMatchReporterPlugin;
 ///
 /// Logic flow:
 /// 1. Read Results dictionary from the ended race session.
-/// 2. Keep only drivers whose Steam ID was in the grid-at-start set.
-/// 3. Sort by RacePos, map laps/times/DNF into participant rows.
+/// 2. Walk the green-flag starter list (authoritative field — one row per starter, never filtered out).
+/// 3. Match each starter to a Results row by Steam ID; missing row → DNF at last place.
 /// 4. Compare field size and peak window to set counted_for_ranked.
-/// 5. Return DTO with new match_id UUID and ISO timestamps.
+/// 5. Return DTO with new match_id (UUID v7 — timestamp in id, Postgres uuid column) and ISO timestamps.
 /// </summary>
 public static class MatchReportBuilder
 {
@@ -30,45 +30,34 @@ public static class MatchReportBuilder
         RankedMatchReporterConfiguration configuration,
         ACServerConfiguration serverConfiguration,
         SessionState raceSession,
-        IReadOnlySet<ulong> gridSteamIdsAtStart,
+        IReadOnlyList<RaceStarterSnapshot> raceStartersAtGreen,
         DateTime raceStartedAtUtc,
         DateTime raceFinishedAtUtc)
     {
         // Read result rows from the ended race; use empty dict if Results is null.
         var results = raceSession.Results ?? new Dictionary<byte, EntryCarResult>();
         var participants = new List<MatchParticipantPayload>();
+        var fieldSize = raceStartersAtGreen.Count;
 
-        // Filter to grid-at-start Steam IDs, then order by finish position for stable participant list.
-        foreach (var result in results.Values
-                     .Where(r => r.Guid != 0 && gridSteamIdsAtStart.Contains(r.Guid))
-                     .OrderBy(r => r.RacePos == 0 ? uint.MaxValue : r.RacePos))
+        // Index Results by Steam ID so we can look up each starter without scanning every slot each time.
+        var resultsBySteamId = results.Values
+            .Where(r => r.Guid != 0)
+            .GroupBy(r => r.Guid)
+            .ToDictionary(g => g.Key, g => g.First());
+
+        // Walk green-flag starters only — mid-race joiners never appear in this list.
+        foreach (var starter in raceStartersAtGreen)
         {
-            // Walk race grid list to find this driver's quali slot index
-            // Read raceSession.Grid (start-order list from AssettoServer at race green).
-            // Tag each entry with its 0-based slot index; pick the slot where Client.Guid equals result.Guid.
-            // FirstOrDefault yields index -1 when the driver is missing from Grid; store null in JSON in that case.
-            var gridSlotIndex = raceSession.Grid?
-                .Select((car, index) => (car, index))
-                .FirstOrDefault(x => x.car.Client?.Guid == result.Guid)
-                .index;
-
-            participants.Add(new MatchParticipantPayload
+            if (!resultsBySteamId.TryGetValue(starter.SteamId, out var result))
             {
-                // result.Guid is Steam ID (ulong); ingest expects decimal string.
-                SteamId = result.Guid.ToString(CultureInfo.InvariantCulture),
-                Username = result.Name,
-                // result.RacePos is server finish order; 0 means unset — use loop order as fallback.
-                FinishPosition = result.RacePos == 0 ? participants.Count + 1 : (int)result.RacePos,
-                // HasCompletedLastLap false → driver did not complete the final lap before overtime/end.
-                Dnf = !result.HasCompletedLastLap,
-                GridPosition = gridSlotIndex >= 0 ? gridSlotIndex + 1 : null,
-                NumLaps = (int)result.NumLaps,
-                BestLapMs = ToLapMs(result.BestLap),
-                TotalRaceTimeMs = result.TotalTime > 0 ? (int)result.TotalTime : null
-            });
+                // Starter left or slot was reused — no Results row for this Steam ID → last place DNF.
+                participants.Add(BuildDisqualifiedParticipant(starter, fieldSize, raceSession, results));
+                continue;
+            }
+
+            participants.Add(BuildParticipantFromResult(starter, result, fieldSize, raceSession, results));
         }
 
-        var fieldSize = participants.Count;
         var inPeakWindow = PeakWindowEvaluator.IsInPeakWindow(
             configuration.PeakWindow,
             raceStartedAtUtc);
@@ -82,7 +71,8 @@ public static class MatchReportBuilder
 
         return new MatchReportPayload
         {
-            MatchId = Guid.NewGuid().ToString(),
+            // UUID v7 embeds creation time (sortable, debuggable). ULID would need a text column in Postgres.
+            MatchId = Guid.CreateVersion7().ToString(),
             LeagueId = configuration.LeagueId,
             ServerId = configuration.ServerId,
             TrackId = track,
@@ -91,6 +81,84 @@ public static class MatchReportBuilder
             FinishedAt = raceFinishedAtUtc.ToString("O", CultureInfo.InvariantCulture),
             CountedForRanked = countedForRanked,
             Participants = participants
+        };
+    }
+
+    /// <summary>
+    /// BuildParticipantFromResult — map one starter's Results row into a participant payload.
+    /// </summary>
+    private static MatchParticipantPayload BuildParticipantFromResult(
+        RaceStarterSnapshot starter,
+        EntryCarResult result,
+        int fieldSize,
+        SessionState raceSession,
+        Dictionary<byte, EntryCarResult> results)
+    {
+        // Walk Results slot keys to find this driver's quali grid index.
+        var gridSlotIndex = raceSession.Grid?
+            .Select((car, index) => (car, index))
+            .FirstOrDefault(x => results.TryGetValue(x.car.SessionId, out var slotResult)
+                                   && slotResult.Guid == starter.SteamId)
+            .index;
+
+        // No laps and no result row activity → treat as disqualified at last place (same as missing row).
+        if (result.NumLaps == 0)
+        {
+            return new MatchParticipantPayload
+            {
+                SteamId = starter.SteamId.ToString(CultureInfo.InvariantCulture),
+                Username = result.Name.Length > 0 ? result.Name : starter.Username,
+                FinishPosition = fieldSize,
+                Dnf = true,
+                GridPosition = gridSlotIndex >= 0 ? gridSlotIndex + 1 : null,
+                NumLaps = 0,
+                BestLapMs = null,
+                TotalRaceTimeMs = null
+            };
+        }
+
+        // AssettoServer RacePos is 0-based (leader = 0); ingest expects 1-based finish position.
+        var finishPosition = (int)result.RacePos + 1;
+
+        return new MatchParticipantPayload
+        {
+            SteamId = starter.SteamId.ToString(CultureInfo.InvariantCulture),
+            Username = result.Name.Length > 0 ? result.Name : starter.Username,
+            FinishPosition = finishPosition,
+            // HasCompletedLastLap false → driver did not complete the final lap before overtime/end.
+            Dnf = !result.HasCompletedLastLap,
+            GridPosition = gridSlotIndex >= 0 ? gridSlotIndex + 1 : null,
+            NumLaps = (int)result.NumLaps,
+            BestLapMs = ToLapMs(result.BestLap),
+            TotalRaceTimeMs = result.TotalTime > 0 ? (int)result.TotalTime : null
+        };
+    }
+
+    /// <summary>
+    /// BuildDisqualifiedParticipant — starter with no Results row; last place, DNF.
+    /// </summary>
+    private static MatchParticipantPayload BuildDisqualifiedParticipant(
+        RaceStarterSnapshot starter,
+        int fieldSize,
+        SessionState raceSession,
+        Dictionary<byte, EntryCarResult> results)
+    {
+        var gridSlotIndex = raceSession.Grid?
+            .Select((car, index) => (car, index))
+            .FirstOrDefault(x => results.TryGetValue(x.car.SessionId, out var slotResult)
+                                   && slotResult.Guid == starter.SteamId)
+            .index;
+
+        return new MatchParticipantPayload
+        {
+            SteamId = starter.SteamId.ToString(CultureInfo.InvariantCulture),
+            Username = starter.Username,
+            FinishPosition = fieldSize,
+            Dnf = true,
+            GridPosition = gridSlotIndex >= 0 ? gridSlotIndex + 1 : null,
+            NumLaps = 0,
+            BestLapMs = null,
+            TotalRaceTimeMs = null
         };
     }
 

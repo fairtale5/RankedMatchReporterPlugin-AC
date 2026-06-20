@@ -1,6 +1,7 @@
 using AssettoServer.Server;
 using AssettoServer.Server.Configuration;
 using AssettoServer.Shared.Model;
+using RankedMatchReporterPlugin.Models;
 using Serilog;
 
 namespace RankedMatchReporterPlugin;
@@ -10,35 +11,41 @@ namespace RankedMatchReporterPlugin;
 ///
 /// Logic flow:
 /// 1. Subscribe to SessionChanged on startup.
-/// 2. When next session is Race, store UTC start time and Steam IDs of connected drivers in a HashSet.
-/// 3. When previous session was Race and race-over was sent, build payload from Results + snapshot, send via BrainIngestClient.
-/// 4. Clear snapshot after each report attempt.
+/// 2. When next session is Race, schedule a snapshot at green flag (StartTime + delay).
+/// 3. At green, store Steam ID + username for each grid slot with a connected driver — authoritative starter list.
+/// 4. When previous session was Race and race-over was sent, copy that starter list and build payload from Results.
+/// 5. Starters missing from Results at race end are reported as DNF at last place; mid-race joiners are never in the starter list.
 ///
-/// Deferred (not implemented here): chat ranked-window messages, late-join noclip — see docs/NEXT-STEPS.md.
-/// State held between sessions: _gridSteamIdsAtRaceStart (HashSet of Steam IDs), _raceStartedAtUtc (DateTime?).
+/// Deferred (not implemented here): chat ranked-window messages, late-join noclip, pit-lane gate at green — see docs/NEXT-STEPS.md.
+/// State held between sessions: _raceStartersAtGreen, _raceStartedAtUtc (DateTime?).
 /// </summary>
 public sealed class RankedMatchReporterFeature : IDisposable
 {
+    /// <summary>Wait this long after session start time before snapshot (lights / clock start).</summary>
+    private const int SnapshotDelayAfterSessionStartMs = 1000;
+
     private readonly RankedMatchReporterConfiguration _configuration;
     private readonly ACServerConfiguration _serverConfiguration;
     private readonly SessionManager _sessionManager;
     private readonly EntryCarManager _entryCarManager;
-    private readonly BrainIngestClient _ingestClient;
+    private readonly BrainApiClient _brainApi;
 
-    private HashSet<ulong> _gridSteamIdsAtRaceStart = new();
+    private List<RaceStarterSnapshot> _raceStartersAtGreen = new();
     private DateTime? _raceStartedAtUtc;
+    private CancellationTokenSource? _raceStartSnapshotScheduler;
 
     public RankedMatchReporterFeature(
         RankedMatchReporterConfiguration configuration,
         ACServerConfiguration serverConfiguration,
         SessionManager sessionManager,
-        EntryCarManager entryCarManager)
+        EntryCarManager entryCarManager,
+        BrainApiClient brainApi)
     {
         _configuration = configuration;
         _serverConfiguration = serverConfiguration;
         _sessionManager = sessionManager;
         _entryCarManager = entryCarManager;
-        _ingestClient = new BrainIngestClient(configuration);
+        _brainApi = brainApi;
 
         _sessionManager.SessionChanged += OnSessionChanged;
 
@@ -50,13 +57,15 @@ public sealed class RankedMatchReporterFeature : IDisposable
     }
 
     /// <summary>
-    /// OnSessionChanged — capture grid at race start; report results when a race session ends.
+    /// OnSessionChanged — schedule starter snapshot at green; report results when a race session ends.
     /// </summary>
     private void OnSessionChanged(SessionManager sender, SessionChangedEventArgs args)
     {
-        // Next session type Race → snapshot who is on the server now (grid-at-start for this race).
+        // Next session type Race → schedule snapshot at green flag (not at session switch).
         if (args.NextSession.Configuration.Type == SessionType.Race)
-            CaptureRaceStartSnapshot();
+            ScheduleRaceStartSnapshot();
+        else
+            CancelRaceStartSnapshotScheduler();
 
         // Previous session was not Race (e.g. quali → practice) → no results to report.
         if (args.PreviousSession?.Configuration.Type != SessionType.Race)
@@ -70,51 +79,92 @@ public sealed class RankedMatchReporterFeature : IDisposable
             return;
         }
 
-        // Fire report on thread pool; PreviousSession still holds Results dictionary at this moment.
-        _ = ReportRaceAsync(args.PreviousSession);
+        // Copy starter list now — async report must not read shared fields the next race can overwrite.
+        var raceStarters = _raceStartersAtGreen.ToList();
+        var raceStartedAt = _raceStartedAtUtc;
+        _ = ReportRaceAsync(args.PreviousSession, raceStarters, raceStartedAt);
     }
 
     /// <summary>
-    /// CaptureRaceStartSnapshot — store grid Steam IDs and UTC timestamp when Race session begins.
+    /// ScheduleRaceStartSnapshot — wait until race green, then capture starter Steam IDs and usernames.
     /// </summary>
-    private void CaptureRaceStartSnapshot()
+    private void ScheduleRaceStartSnapshot()
     {
+        CancelRaceStartSnapshotScheduler();
+
+        var raceSession = _sessionManager.CurrentSession;
+        long startMs = raceSession.StartTimeMilliseconds;
+        long waitUntilSnapshotMs = Math.Max(0L, startMs - _sessionManager.ServerTimeMilliseconds)
+            + SnapshotDelayAfterSessionStartMs;
+
+        _raceStartSnapshotScheduler = new CancellationTokenSource();
+        var cts = _raceStartSnapshotScheduler;
+
+        Log.Debug(
+            "RankedMatchReporterPlugin: starter snapshot scheduled in {DelaySeconds:F1}s (after race green)",
+            waitUntilSnapshotMs / 1000.0);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay((int)waitUntilSnapshotMs, cts.Token).ConfigureAwait(false);
+                CaptureRaceStartSnapshotAtGreen();
+            }
+            catch (OperationCanceledException)
+            {
+                // Session changed before green — discard pending snapshot.
+            }
+        }, cts.Token);
+    }
+
+    /// <summary>
+    /// CaptureRaceStartSnapshotAtGreen — read grid slots with a connected driver; store Steam ID and username per starter.
+    /// </summary>
+    private void CaptureRaceStartSnapshotAtGreen()
+    {
+        var session = _sessionManager.CurrentSession;
+        if (session.Configuration.Type != SessionType.Race)
+            return;
+
         _raceStartedAtUtc = DateTime.UtcNow;
-        // Collect Guid from each connected entry car; empty Guid slots are skipped.
-        // Read EntryCarManager.EntryCars; for each car with Client, read Client.Guid (Steam ID).
-        // Drop Guid 0 (empty slot); store remaining IDs in _gridSteamIdsAtRaceStart for later Contains() filter.
-        _gridSteamIdsAtRaceStart = _entryCarManager.EntryCars
-            .Where(car => car.Client != null)
-            .Select(car => car.Client!.Guid)
-            .Where(guid => guid != 0)
-            .ToHashSet();
+
+        // Read race grid list; keep slots that have a client with a non-zero Steam ID.
+        var gridCars = session.Grid ?? _entryCarManager.EntryCars;
+        _raceStartersAtGreen = gridCars
+            .Where(car => car.Client?.Guid is ulong guid && guid != 0)
+            .Select(car => new RaceStarterSnapshot(car.Client!.Guid, car.Client!.Name ?? ""))
+            .ToList();
 
         Log.Information(
-            "RankedMatchReporterPlugin: race start snapshot ({DriverCount} drivers on grid)",
-            _gridSteamIdsAtRaceStart.Count);
+            "RankedMatchReporterPlugin: race start snapshot ({DriverCount} drivers at green)",
+            _raceStartersAtGreen.Count);
     }
 
     /// <summary>
     /// ReportRaceAsync — build ingest payload from ended race session and POST or dry-run log.
     /// </summary>
-    private async Task ReportRaceAsync(SessionState raceSession)
+    private async Task ReportRaceAsync(
+        SessionState raceSession,
+        IReadOnlyList<RaceStarterSnapshot> raceStartersAtGreen,
+        DateTime? raceStartedAtUtc)
     {
         try
         {
-            if (_gridSteamIdsAtRaceStart.Count == 0)
+            if (raceStartersAtGreen.Count == 0)
             {
                 Log.Warning("RankedMatchReporterPlugin: no grid snapshot for ended race");
                 return;
             }
 
             var finishedAt = DateTime.UtcNow;
-            var startedAt = _raceStartedAtUtc ?? finishedAt;
+            var startedAt = raceStartedAtUtc ?? finishedAt;
 
             var payload = MatchReportBuilder.Build(
                 _configuration,
                 _serverConfiguration,
                 raceSession,
-                _gridSteamIdsAtRaceStart,
+                raceStartersAtGreen,
                 startedAt,
                 finishedAt);
 
@@ -134,22 +184,24 @@ public sealed class RankedMatchReporterFeature : IDisposable
                 return;
             }
 
-            await _ingestClient.SendAsync(payload, CancellationToken.None).ConfigureAwait(false);
+            await _brainApi.SendRaceAsync(payload, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             Log.Error(ex, "RankedMatchReporterPlugin: failed to report race");
         }
-        finally
-        {
-            _gridSteamIdsAtRaceStart.Clear();
-            _raceStartedAtUtc = null;
-        }
+    }
+
+    private void CancelRaceStartSnapshotScheduler()
+    {
+        _raceStartSnapshotScheduler?.Cancel();
+        _raceStartSnapshotScheduler?.Dispose();
+        _raceStartSnapshotScheduler = null;
     }
 
     public void Dispose()
     {
+        CancelRaceStartSnapshotScheduler();
         _sessionManager.SessionChanged -= OnSessionChanged;
-        _ingestClient.Dispose();
     }
 }

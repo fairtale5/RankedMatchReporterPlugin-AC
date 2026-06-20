@@ -34,7 +34,7 @@ EnablePlugins:
 | Setting | Default | Purpose |
 |---------|---------|---------|
 | `DryRun` | `true` | Log JSON only — no HTTP until brain is up |
-| `IngestUrl` | `http://127.0.0.1:8080/v1/races` | serv-brain POST target |
+| `IngestUrl` | `http://127.0.0.1:10000/v1/races` | serv-brain POST target |
 | `LeagueId` / `ServerId` | — | Identifiers in payload |
 | `MinimumDriversForRanked` | `4` | Sets `counted_for_ranked` on payload |
 | `PeakWindow` | 18:30–22:30 BRT | Sets `counted_for_ranked` on payload |
@@ -43,11 +43,15 @@ EnablePlugins:
 
 ## Build
 
+Included in the fleet solution — one publish builds server + all plugins:
+
 ```bash
-dotnet publish -c Release
+cd serv-game/AssettoServer
+rm -rf out-linux-x64
+dotnet publish -c Release -r linux-x64
 ```
 
-(requires AssettoServer sibling paths as in `.csproj`)
+Output: `serv-game/AssettoServer/out-linux-x64/plugins/RankedMatchReporterPlugin/`
 
 ---
 

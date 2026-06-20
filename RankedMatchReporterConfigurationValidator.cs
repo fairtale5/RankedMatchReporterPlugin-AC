@@ -13,6 +13,7 @@ public class RankedMatchReporterConfigurationValidator : AbstractValidator<Ranke
     public RankedMatchReporterConfigurationValidator()
     {
         RuleFor(c => c.LeagueId).NotEmpty();
+        RuleFor(c => c.LeagueDisplayName).NotEmpty();
         RuleFor(c => c.ServerId).NotEmpty();
         RuleFor(c => c.IngestUrl).NotEmpty();
         RuleFor(c => c.MinimumDriversForRanked).GreaterThan(0);

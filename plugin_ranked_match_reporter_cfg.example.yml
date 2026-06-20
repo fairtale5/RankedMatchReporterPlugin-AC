@@ -2,10 +2,13 @@
 
 Enabled: true
 LeagueId: gt3_ks
+LeagueDisplayName: GT3 Ranked
+SendRatingNoticeOnJoin: true
+SendRatingNoticeAtSessionStart: true
 ServerId: ff-circuit-gt3-ks
 
 # serv-brain ingest (see serv-brain/README.md)
-IngestUrl: http://127.0.0.1:8080/v1/races
+IngestUrl: http://127.0.0.1:10000/v1/races
 ApiKey: ""
 
 # true = log JSON only until ingest API exists
