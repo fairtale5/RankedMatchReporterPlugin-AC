@@ -71,8 +71,8 @@ public class PeakWindowConfiguration
     public string TimeZoneId { get; init; } = "America/Sao_Paulo";
 
     [YamlMember(Description = "Local start time HH:mm inclusive")]
-    public string StartLocal { get; init; } = "18:30";
+    public string StartLocal { get; init; } = "17:30";
 
     [YamlMember(Description = "Local end time HH:mm inclusive")]
-    public string EndLocal { get; init; } = "22:30";
+    public string EndLocal { get; init; } = "22:00";
 }

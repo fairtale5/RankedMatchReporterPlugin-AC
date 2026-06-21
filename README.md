@@ -37,7 +37,7 @@ EnablePlugins:
 | `IngestUrl` | `http://127.0.0.1:10000/v1/races` | serv-brain POST target |
 | `LeagueId` / `ServerId` | — | Identifiers in payload |
 | `MinimumDriversForRanked` | `4` | Sets `counted_for_ranked` on payload |
-| `PeakWindow` | 18:30–22:30 BRT | Sets `counted_for_ranked` on payload |
+| `PeakWindow` | 17:30–22:00 BRT when enabled; `Enabled: false` = 24/7 | Sets `counted_for_ranked` on payload |
 
 ---
 

@@ -23,5 +23,5 @@ ReportUncountedRaces: true
 PeakWindow:
   Enabled: true
   TimeZoneId: America/Sao_Paulo
-  StartLocal: "18:30"
-  EndLocal: "22:30"
+  StartLocal: "17:30"
+  EndLocal: "22:00"
