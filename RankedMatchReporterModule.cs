@@ -19,5 +19,6 @@ public class RankedMatchReporterModule : AssettoServerModule<RankedMatchReporter
     protected override void Load(ContainerBuilder builder)
     {
         builder.RegisterType<RankedMatchReporterPlugin>().AsSelf().As<IHostedService>().SingleInstance();
+        builder.RegisterType<RankedMatchReporterCommandModule>().AsSelf();
     }
 }

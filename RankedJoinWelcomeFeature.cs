@@ -108,6 +108,10 @@ public sealed class RankedJoinWelcomeFeature : IDisposable
         }
     }
 
+    /// <summary>Fetch current rating and send the same private notice as on join.</summary>
+    public Task SendScoreNoticeAsync(ACTcpClient client, CancellationToken cancellationToken = default) =>
+        SendNoticeAsync(client, expectedMatchId: null, cancellationToken);
+
     private async Task SendNoticeAsync(
         ACTcpClient client,
         string? expectedMatchId,
@@ -185,17 +189,15 @@ public sealed class RankedJoinWelcomeFeature : IDisposable
 
         if (rating.IsRanked)
         {
-            var formattedRating = BrainApiClient.FormatRating(rating.Rating);
-            lines.Add($"{clientName}: Rank: #{rating.LeagueRank} | Rating {formattedRating}.");
+            lines.Add($"{clientName}: Rank: #{rating.LeagueRank}");
+            if (TryBuildLastRaceLine(rating, expectedMatchId, out var lastRaceLine))
+                lines.Add(lastRaceLine);
         }
         else
         {
             lines.Add($"Hi {clientName}! You don't have a rank in {leagueLabel} yet.");
             lines.Add($"Complete a full race ({minDrivers}+ drivers) to earn your first points.");
         }
-
-        if (TryBuildLastRaceLine(rating, expectedMatchId, out var lastRaceLine))
-            lines.Add(lastRaceLine);
 
         return string.Join("\n", lines);
     }
@@ -223,7 +225,7 @@ public sealed class RankedJoinWelcomeFeature : IDisposable
             ? "[abandoned]"
             : $"[P{rating.LastRace.FinishPosition}]";
 
-        line = $"Last race results: {resultTag} -> {was} {delta} = {result}";
+        line = $"Last race: {resultTag} → {was} {delta} = {result} points";
         return true;
     }
 

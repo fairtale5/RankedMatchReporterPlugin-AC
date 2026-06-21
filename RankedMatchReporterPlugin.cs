@@ -1,3 +1,4 @@
+using AssettoServer.Network.Tcp;
 using AssettoServer.Server;
 using AssettoServer.Server.Configuration;
 using Microsoft.Extensions.Hosting;
@@ -42,15 +43,24 @@ public class RankedMatchReporterPlugin : BackgroundService
             _brainApi,
             reportState);
 
-        if (configuration.SendRatingNoticeOnJoin || configuration.SendRatingNoticeAtSessionStart)
+        _joinWelcome = new RankedJoinWelcomeFeature(
+            configuration,
+            sessionManager,
+            entryCarManager,
+            _brainApi,
+            reportState);
+    }
+
+    /// <summary>On-demand /score — same private notice as join welcome.</summary>
+    public Task SendScoreNoticeAsync(ACTcpClient client, CancellationToken cancellationToken = default)
+    {
+        if (_joinWelcome == null)
         {
-            _joinWelcome = new RankedJoinWelcomeFeature(
-                configuration,
-                sessionManager,
-                entryCarManager,
-                _brainApi,
-                reportState);
+            client.SendChatMessage("Ratings currently unavailable");
+            return Task.CompletedTask;
         }
+
+        return _joinWelcome.SendScoreNoticeAsync(client, cancellationToken);
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
