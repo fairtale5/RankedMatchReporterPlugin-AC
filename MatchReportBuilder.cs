@@ -16,10 +16,11 @@ namespace RankedMatchReporterPlugin;
 ///
 /// Logic flow:
 /// 1. Read Results dictionary from the ended race session.
-/// 2. Walk the green-flag starter list (authoritative field — one row per starter, never filtered out).
+/// 2. Walk the green-flag starter list (one participant row per starter).
 /// 3. Match each starter to a Results row by Steam ID; missing row → DNF at last place.
-/// 4. Compare field size and peak window to set counted_for_ranked.
-/// 5. Return DTO with new match_id (UUID v7 — timestamp in id, Postgres uuid column) and ISO timestamps.
+/// 4. When ExcludeZeroLapDriversFromRanking is on, drop rows with num_laps=0 before ingest.
+/// 5. Compare ranking field size and peak window to set counted_for_ranked.
+/// 6. Return DTO with new match_id (UUID v7) and ISO timestamps.
 /// </summary>
 public static class MatchReportBuilder
 {
@@ -58,11 +59,18 @@ public static class MatchReportBuilder
             participants.Add(BuildParticipantFromResult(starter, result, fieldSize, raceSession, results));
         }
 
+        // When enabled, send only drivers who completed at least one lap — brain ranks everyone in participants[].
+        var rankingParticipants = configuration.ExcludeZeroLapDriversFromRanking
+            ? participants.Where(p => p.NumLaps > 0).ToList()
+            : participants;
+
+        var rankingFieldSize = rankingParticipants.Count;
+
         var inPeakWindow = PeakWindowEvaluator.IsInPeakWindow(
             configuration.PeakWindow,
             raceStartedAtUtc);
-        // countedForRanked true only when enough drivers AND (peak check off OR start time inside window).
-        var countedForRanked = fieldSize >= configuration.MinimumDriversForRanked
+        // countedForRanked uses drivers in the payload (after zero-lap filter when enabled).
+        var countedForRanked = rankingFieldSize >= configuration.MinimumDriversForRanked
             && (!configuration.PeakWindow.Enabled || inPeakWindow);
 
         // Track/layout strings come from server cfg, not from the session object.
@@ -80,7 +88,7 @@ public static class MatchReportBuilder
             StartedAt = raceStartedAtUtc.ToString("O", CultureInfo.InvariantCulture),
             FinishedAt = raceFinishedAtUtc.ToString("O", CultureInfo.InvariantCulture),
             CountedForRanked = countedForRanked,
-            Participants = participants
+            Participants = rankingParticipants
         };
     }
 

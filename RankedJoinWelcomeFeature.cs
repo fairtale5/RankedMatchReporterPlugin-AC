@@ -15,8 +15,6 @@ namespace RankedMatchReporterPlugin;
 /// </summary>
 public sealed class RankedJoinWelcomeFeature : IDisposable
 {
-    private const string RatingsUnavailableMessage = "Ratings currently unavailable";
-
     private readonly RankedMatchReporterConfiguration _configuration;
     private readonly SessionManager _sessionManager;
     private readonly EntryCarManager _entryCarManager;
@@ -119,12 +117,19 @@ public sealed class RankedJoinWelcomeFeature : IDisposable
     {
         try
         {
-            var rating = await WaitForRatingAsync(client.Guid, expectedMatchId, cancellationToken)
+            var waitResult = await WaitForRatingAsync(client.Guid, expectedMatchId, cancellationToken)
                 .ConfigureAwait(false);
 
-            var message = rating == null
-                ? RatingsUnavailableMessage
-                : BuildNoticeMessage(client.Name ?? "Driver", rating, expectedMatchId);
+            var message = waitResult.Status switch
+            {
+                RatingWaitStatus.Ready => BuildNoticeMessage(
+                    client.Name ?? "Driver",
+                    waitResult.Rating!,
+                    expectedMatchId),
+                RatingWaitStatus.ApiUnavailable => BuildApiUnavailableMessage(expectedMatchId),
+                RatingWaitStatus.RaceResultsTimedOut => BuildRaceResultsTimedOutMessage(expectedMatchId),
+                _ => BuildApiUnavailableMessage(expectedMatchId)
+            };
 
             client.SendChatMessage(message);
         }
@@ -135,17 +140,22 @@ public sealed class RankedJoinWelcomeFeature : IDisposable
         catch (Exception ex)
         {
             Log.Warning(ex, "RankedMatchReporterPlugin: rating notice failed for {Name}", client.Name);
-            client.SendChatMessage(RatingsUnavailableMessage);
+            client.SendChatMessage(BuildServerErrorMessage());
         }
     }
 
-    private async Task<Models.PlayerRatingResponse?> WaitForRatingAsync(
+    private async Task<RatingWaitResult> WaitForRatingAsync(
         ulong steamId,
         string? expectedMatchId,
         CancellationToken cancellationToken)
     {
         if (expectedMatchId == null)
-            return await _brainApi.GetPlayerRatingAsync(steamId, cancellationToken).ConfigureAwait(false);
+        {
+            var rating = await _brainApi.GetPlayerRatingAsync(steamId, cancellationToken).ConfigureAwait(false);
+            return rating == null
+                ? new RatingWaitResult(RatingWaitStatus.ApiUnavailable, null)
+                : new RatingWaitResult(RatingWaitStatus.Ready, rating);
+        }
 
         var deadline = DateTime.UtcNow.AddSeconds(_configuration.RatingNoticeMaxWaitForRaceResultsSeconds);
         var pollMs = _configuration.RatingNoticePollIntervalSeconds * 1000;
@@ -156,13 +166,10 @@ public sealed class RankedJoinWelcomeFeature : IDisposable
 
             var rating = await _brainApi.GetPlayerRatingAsync(steamId, cancellationToken).ConfigureAwait(false);
             if (rating == null)
-                return null;
+                return new RatingWaitResult(RatingWaitStatus.ApiUnavailable, null);
 
-            if (rating.LastRace != null
-                && string.Equals(rating.LastRace.MatchId, expectedMatchId, StringComparison.OrdinalIgnoreCase))
-            {
-                return rating;
-            }
+            if (IsLastRaceForMatch(rating, expectedMatchId))
+                return new RatingWaitResult(RatingWaitStatus.Ready, rating);
 
             if (DateTime.UtcNow >= deadline)
             {
@@ -170,13 +177,29 @@ public sealed class RankedJoinWelcomeFeature : IDisposable
                     "RankedMatchReporterPlugin: timed out waiting for processed race {MatchId} for steam {SteamId}",
                     expectedMatchId,
                     steamId);
-                return rating;
+                return new RatingWaitResult(RatingWaitStatus.RaceResultsTimedOut, null);
             }
 
             if (pollMs > 0)
                 await Task.Delay(pollMs, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    private static bool IsLastRaceForMatch(Models.PlayerRatingResponse rating, string expectedMatchId) =>
+        rating.LastRace != null
+        && !string.IsNullOrWhiteSpace(rating.LastRace.MatchId)
+        && string.Equals(rating.LastRace.MatchId, expectedMatchId, StringComparison.OrdinalIgnoreCase);
+
+    private string BuildApiUnavailableMessage(string? afterRace) =>
+        afterRace != null
+            ? "Ratings unavailable — ranked server did not respond after the race. Try /score."
+            : "Ratings unavailable — ranked server did not respond. Try /score.";
+
+    private string BuildRaceResultsTimedOutMessage(string? _) =>
+        $"Ratings unavailable — results not ready yet (waited {_configuration.RatingNoticeMaxWaitForRaceResultsSeconds}s). Try /score.";
+
+    private static string BuildServerErrorMessage() =>
+        "Ratings unavailable — server error. Try /score.";
 
     private string BuildNoticeMessage(
         string clientName,
@@ -228,6 +251,15 @@ public sealed class RankedJoinWelcomeFeature : IDisposable
         line = $"Last race: {resultTag} → {was} {delta} = {result} points";
         return true;
     }
+
+    private enum RatingWaitStatus
+    {
+        Ready,
+        ApiUnavailable,
+        RaceResultsTimedOut
+    }
+
+    private readonly record struct RatingWaitResult(RatingWaitStatus Status, Models.PlayerRatingResponse? Rating);
 
     private void CancelPendingSessionNotices()
     {

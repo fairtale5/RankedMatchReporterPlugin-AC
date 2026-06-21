@@ -18,6 +18,8 @@ ApiKey: ""
 DryRun: true
 
 MinimumDriversForRanked: 4
+# Omit num_laps=0 starters from ingest so AFK drivers are not ranked (default false = legacy behavior).
+ExcludeZeroLapDriversFromRanking: false
 ReportUncountedRaces: true
 
 PeakWindow:

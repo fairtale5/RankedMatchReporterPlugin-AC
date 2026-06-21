@@ -121,6 +121,15 @@ public sealed class RankedMatchReporterFeature : IDisposable
             return;
         }
 
+        if (_configuration.ExcludeZeroLapDriversFromRanking
+            && payload.Participants.Count < raceStartersAtGreen.Count)
+        {
+            Log.Information(
+                "RankedMatchReporterPlugin: excluded {Excluded} zero-lap starter(s) from ranking payload ({Remaining} driver(s) remain)",
+                raceStartersAtGreen.Count - payload.Participants.Count,
+                payload.Participants.Count);
+        }
+
         if (!payload.CountedForRanked && !_configuration.ReportUncountedRaces)
         {
             Log.Information(

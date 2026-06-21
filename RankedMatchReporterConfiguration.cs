@@ -54,6 +54,9 @@ public class RankedMatchReporterConfiguration : IValidateConfiguration<RankedMat
     [YamlMember(Description = "Minimum drivers on grid at race start for counted_for_ranked")]
     public int MinimumDriversForRanked { get; init; } = 4;
 
+    [YamlMember(Description = "Omit starters with zero laps from ingest payload so AFK drivers are not ranked (brain unchanged)")]
+    public bool ExcludeZeroLapDriversFromRanking { get; init; } = false;
+
     [YamlMember(Description = "Still POST off-peak races with counted_for_ranked=false")]
     public bool ReportUncountedRaces { get; init; } = true;
 
