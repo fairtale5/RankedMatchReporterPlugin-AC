@@ -18,7 +18,7 @@ AssettoServer plugin that snapshots **race session results** at session end and 
 
 **How reporting works (no shared library):** [`docs/REPORTING-TO-BRAIN.md`](docs/REPORTING-TO-BRAIN.md)
 
-**Deferred (chat, late-join noclip, etc.):** [`docs/NEXT-STEPS.md`](docs/NEXT-STEPS.md) · [`docs/roadmap/planned/ranked-match-reporter-deferred.md`](../../../docs/roadmap/planned/ranked-match-reporter-deferred.md)
+**Deferred (chat, late-join noclip, etc.):** [`docs/NEXT-STEPS.md`](docs/NEXT-STEPS.md) · [`docs/roadmap/planned/ranked-system/deferred.md`](../../../docs/roadmap/planned/ranked-system/deferred.md)
 
 ---
 
@@ -58,11 +58,11 @@ Output: `serv-game/AssettoServer/out-linux-x64/plugins/RankedMatchReporterPlugin
 ## Related docs
 
 - Ingest contract: [`serv-db/docs/ranked-system-data-plan.md`](../../../serv-db/docs/ranked-system-data-plan.md)
-- Product roadmap: [`docs/roadmap/planned/ranked-system-roadmap.md`](../../../docs/roadmap/planned/ranked-system-roadmap.md)
-- serv-brain (planned): [`serv-brain/README.md`](../../../serv-brain/README.md)
+- Product roadmap: [`docs/roadmap/planned/ranked-system/`](../../../docs/roadmap/planned/ranked-system/README.md)
+- serv-brain: [`serv-brain/README.md`](../../../serv-brain/README.md)
 
 ---
 
 ## Status
 
-🚧 **Phase A** — reporting scaffold on branch `feat/brainapi-database-ranked`. Next: serv-brain ingest + SQL migrations.
+✅ **v0.1** — live POST to serv-brain on GT3 + F1 NoDLC; join/session rating notices. Next: website leaderboards — [`docs/roadmap/planned/ranked-system/webpage.md`](../../../docs/roadmap/planned/ranked-system/webpage.md).

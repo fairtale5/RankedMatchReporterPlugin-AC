@@ -15,7 +15,7 @@ Details: [`REPORTING-TO-BRAIN.md`](REPORTING-TO-BRAIN.md)
 
 ## Deferred (after v1)
 
-Planned in repo: [`docs/roadmap/planned/ranked-match-reporter-deferred.md`](../../../../docs/roadmap/planned/ranked-match-reporter-deferred.md)
+Planned in repo: [`docs/roadmap/planned/ranked-system/deferred.md`](../../../../docs/roadmap/planned/ranked-system/deferred.md)
 
 | Item | Summary |
 |------|---------|
