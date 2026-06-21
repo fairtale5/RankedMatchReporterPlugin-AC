@@ -17,6 +17,9 @@ public class RankedMatchReporterConfigurationValidator : AbstractValidator<Ranke
         RuleFor(c => c.ServerId).NotEmpty();
         RuleFor(c => c.IngestUrl).NotEmpty();
         RuleFor(c => c.MinimumDriversForRanked).GreaterThan(0);
+        RuleFor(c => c.RatingNoticeDelayAfterRaceSeconds).GreaterThanOrEqualTo(0);
+        RuleFor(c => c.RatingNoticeMaxWaitForRaceResultsSeconds).GreaterThan(0);
+        RuleFor(c => c.RatingNoticePollIntervalSeconds).GreaterThan(0);
         RuleFor(c => c.PeakWindow.TimeZoneId).NotEmpty();
     }
 }

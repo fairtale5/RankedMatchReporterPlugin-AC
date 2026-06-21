@@ -36,8 +36,14 @@ public sealed class PlayerRatingResponse
 /// </summary>
 public sealed class LastRaceResult
 {
+    [JsonPropertyName("match_id")]
+    public string MatchId { get; init; } = "";
+
     [JsonPropertyName("finish_position")]
     public int FinishPosition { get; init; }
+
+    [JsonPropertyName("dnf")]
+    public bool Dnf { get; init; }
 
     [JsonPropertyName("rating_before")]
     public int RatingBefore { get; init; }

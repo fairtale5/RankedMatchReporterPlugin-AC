@@ -29,6 +29,7 @@ public sealed class RankedMatchReporterFeature : IDisposable
     private readonly SessionManager _sessionManager;
     private readonly EntryCarManager _entryCarManager;
     private readonly BrainApiClient _brainApi;
+    private readonly RankedRaceReportState _reportState;
 
     private List<RaceStarterSnapshot> _raceStartersAtGreen = new();
     private DateTime? _raceStartedAtUtc;
@@ -39,13 +40,15 @@ public sealed class RankedMatchReporterFeature : IDisposable
         ACServerConfiguration serverConfiguration,
         SessionManager sessionManager,
         EntryCarManager entryCarManager,
-        BrainApiClient brainApi)
+        BrainApiClient brainApi,
+        RankedRaceReportState reportState)
     {
         _configuration = configuration;
         _serverConfiguration = serverConfiguration;
         _sessionManager = sessionManager;
         _entryCarManager = entryCarManager;
         _brainApi = brainApi;
+        _reportState = reportState;
 
         _sessionManager.SessionChanged += OnSessionChanged;
 
@@ -82,7 +85,52 @@ public sealed class RankedMatchReporterFeature : IDisposable
         // Copy starter list now — async report must not read shared fields the next race can overwrite.
         var raceStarters = _raceStartersAtGreen.ToList();
         var raceStartedAt = _raceStartedAtUtc;
-        _ = ReportRaceAsync(args.PreviousSession, raceStarters, raceStartedAt);
+        TryQueueRaceReport(args.PreviousSession, raceStarters, raceStartedAt);
+    }
+
+    /// <summary>
+    /// TryQueueRaceReport — build payload synchronously, store match_id for rating notices, POST async.
+    /// </summary>
+    private void TryQueueRaceReport(
+        SessionState raceSession,
+        IReadOnlyList<RaceStarterSnapshot> raceStartersAtGreen,
+        DateTime? raceStartedAtUtc)
+    {
+        _reportState.ClearLastReportedMatchId();
+
+        if (raceStartersAtGreen.Count == 0)
+        {
+            Log.Warning("RankedMatchReporterPlugin: no grid snapshot for ended race");
+            return;
+        }
+
+        var finishedAt = DateTime.UtcNow;
+        var startedAt = raceStartedAtUtc ?? finishedAt;
+
+        var payload = MatchReportBuilder.Build(
+            _configuration,
+            _serverConfiguration,
+            raceSession,
+            raceStartersAtGreen,
+            startedAt,
+            finishedAt);
+
+        if (payload.Participants.Count == 0)
+        {
+            Log.Warning("RankedMatchReporterPlugin: no participants in payload");
+            return;
+        }
+
+        if (!payload.CountedForRanked && !_configuration.ReportUncountedRaces)
+        {
+            Log.Information(
+                "RankedMatchReporterPlugin: skipped uncounted race ({ParticipantCount} drivers)",
+                payload.Participants.Count);
+            return;
+        }
+
+        _reportState.SetLastReportedMatchId(payload.MatchId);
+        _ = ReportRaceAsync(payload);
     }
 
     /// <summary>
@@ -142,48 +190,12 @@ public sealed class RankedMatchReporterFeature : IDisposable
     }
 
     /// <summary>
-    /// ReportRaceAsync — build ingest payload from ended race session and POST or dry-run log.
+    /// ReportRaceAsync — POST pre-built payload to serv-brain or dry-run log.
     /// </summary>
-    private async Task ReportRaceAsync(
-        SessionState raceSession,
-        IReadOnlyList<RaceStarterSnapshot> raceStartersAtGreen,
-        DateTime? raceStartedAtUtc)
+    private async Task ReportRaceAsync(MatchReportPayload payload)
     {
         try
         {
-            if (raceStartersAtGreen.Count == 0)
-            {
-                Log.Warning("RankedMatchReporterPlugin: no grid snapshot for ended race");
-                return;
-            }
-
-            var finishedAt = DateTime.UtcNow;
-            var startedAt = raceStartedAtUtc ?? finishedAt;
-
-            var payload = MatchReportBuilder.Build(
-                _configuration,
-                _serverConfiguration,
-                raceSession,
-                raceStartersAtGreen,
-                startedAt,
-                finishedAt);
-
-            if (payload.Participants.Count == 0)
-            {
-                Log.Warning("RankedMatchReporterPlugin: no participants in payload");
-                return;
-            }
-
-            // Optionally skip POST when race did not meet ranked criteria and config says so.
-            // payload.CountedForRanked false and ReportUncountedRaces false → do not call ingest at all.
-            if (!payload.CountedForRanked && !_configuration.ReportUncountedRaces)
-            {
-                Log.Information(
-                    "RankedMatchReporterPlugin: skipped uncounted race ({ParticipantCount} drivers)",
-                    payload.Participants.Count);
-                return;
-            }
-
             await _brainApi.SendRaceAsync(payload, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)

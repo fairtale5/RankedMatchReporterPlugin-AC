@@ -30,6 +30,15 @@ public class RankedMatchReporterConfiguration : IValidateConfiguration<RankedMat
     [YamlMember(Description = "Private chat with ladder standing and last race rating at each session start")]
     public bool SendRatingNoticeAtSessionStart { get; init; } = true;
 
+    [YamlMember(Description = "Seconds to wait after a race ends before first rating GET at session start")]
+    public int RatingNoticeDelayAfterRaceSeconds { get; init; } = 3;
+
+    [YamlMember(Description = "Max seconds to poll GET until last_race.match_id matches the race just reported")]
+    public int RatingNoticeMaxWaitForRaceResultsSeconds { get; init; } = 15;
+
+    [YamlMember(Description = "Seconds between rating GET polls while waiting for processed race results")]
+    public int RatingNoticePollIntervalSeconds { get; init; } = 1;
+
     [YamlMember(Description = "Server id sent to ingest (e.g. ff-circuit-gt3-ks)")]
     public string ServerId { get; init; } = "unknown";
 

@@ -33,12 +33,14 @@ public class RankedMatchReporterPlugin : BackgroundService
         }
 
         _brainApi = new BrainApiClient(configuration);
+        var reportState = new RankedRaceReportState();
         _feature = new RankedMatchReporterFeature(
             configuration,
             serverConfiguration,
             sessionManager,
             entryCarManager,
-            _brainApi);
+            _brainApi,
+            reportState);
 
         if (configuration.SendRatingNoticeOnJoin || configuration.SendRatingNoticeAtSessionStart)
         {
@@ -46,7 +48,8 @@ public class RankedMatchReporterPlugin : BackgroundService
                 configuration,
                 sessionManager,
                 entryCarManager,
-                _brainApi);
+                _brainApi,
+                reportState);
         }
     }
 

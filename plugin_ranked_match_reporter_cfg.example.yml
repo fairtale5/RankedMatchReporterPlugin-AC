@@ -5,6 +5,9 @@ LeagueId: gt3_ks
 LeagueDisplayName: GT3 Ranked
 SendRatingNoticeOnJoin: true
 SendRatingNoticeAtSessionStart: true
+RatingNoticeDelayAfterRaceSeconds: 3
+RatingNoticeMaxWaitForRaceResultsSeconds: 15
+RatingNoticePollIntervalSeconds: 1
 ServerId: ff-circuit-gt3-ks
 
 # serv-brain ingest (see serv-brain/README.md)

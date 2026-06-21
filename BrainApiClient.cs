@@ -25,8 +25,24 @@ public sealed class BrainApiClient : IDisposable
         WriteIndented = true
     };
 
-    private static readonly CultureInfo RatingFormatCulture =
-        CultureInfo.GetCultureInfo("pt-BR");
+    private static readonly CultureInfo RatingFormatCulture = CreateRatingFormatCulture();
+
+    private static CultureInfo CreateRatingFormatCulture()
+    {
+        try
+        {
+            return CultureInfo.GetCultureInfo("pt-BR");
+        }
+        catch (CultureNotFoundException)
+        {
+            Log.Warning(
+                "RankedMatchReporterPlugin: pt-BR culture not installed on this host; using dot thousands separator");
+            var culture = (CultureInfo)CultureInfo.InvariantCulture.Clone();
+            culture.NumberFormat.NumberGroupSeparator = ".";
+            culture.NumberFormat.NumberDecimalSeparator = ",";
+            return culture;
+        }
+    }
 
     private readonly RankedMatchReporterConfiguration _configuration;
     private readonly HttpClient _httpClient;
