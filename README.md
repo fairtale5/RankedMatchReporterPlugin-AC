@@ -38,6 +38,9 @@ EnablePlugins:
 | `LeagueId` / `ServerId` | — | Identifiers in payload |
 | `MinimumDriversForRanked` | `4` | Sets `counted_for_ranked` on payload |
 | `PeakWindow` | 17:30–22:00 BRT when enabled; `Enabled: false` = 24/7 | Sets `counted_for_ranked` on payload |
+| `BroadcastRaceStartAnnouncement` | `true` | Public chat at race green when peak window allows a counted race |
+| `RaceStartAnnouncement` | see example yml | Message lines (`\n` = separate chat lines) |
+| `ExcludeZeroLapDriversFromRanking` | `false` | Drop zero-lap starters from ingest payload |
 
 ---
 
@@ -65,4 +68,8 @@ Output: `serv-game/AssettoServer/out-linux-x64/plugins/RankedMatchReporterPlugin
 
 ## Status
 
-✅ **v0.1** — live POST to serv-brain on GT3 + F1 NoDLC; join/session rating notices. Next: website leaderboards — [`docs/roadmap/planned/ranked-system/webpage.md`](../../../docs/roadmap/planned/ranked-system/webpage.md).
+✅ **v0.1** — live POST to serv-brain on GT3 + F1 NoDLC.
+
+✅ **v0.2 (ff1.8.72)** — finish position normalization; mid-race disconnect → DNF; race-start broadcast; join + post-race private rating chat (poll until processed).
+
+Next: website leaderboards — [`docs/roadmap/planned/ranked-system/webpage.md`](../../../docs/roadmap/planned/ranked-system/webpage.md).

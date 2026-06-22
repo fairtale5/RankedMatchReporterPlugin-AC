@@ -17,10 +17,11 @@ namespace RankedMatchReporterPlugin;
 /// Logic flow:
 /// 1. Read Results dictionary from the ended race session.
 /// 2. Walk the green-flag starter list (one participant row per starter).
-/// 3. Match each starter to a Results row by Steam ID; missing row → DNF at last place.
+/// 3. Match each starter to a Results row by Steam ID; missing row, zero laps, or disconnect during race → DNF.
 /// 4. When ExcludeZeroLapDriversFromRanking is on, drop rows with num_laps=0 before ingest.
-/// 5. Compare ranking field size and peak window to set counted_for_ranked.
-/// 6. Return DTO with new match_id (UUID v7) and ISO timestamps.
+/// 5. Renumber finish positions to 1..N with no gaps; all DNFs share the same last rank (tie).
+/// 6. Compare ranking field size and peak window to set counted_for_ranked.
+/// 7. Return DTO with new match_id (UUID v7) and ISO timestamps.
 /// </summary>
 public static class MatchReportBuilder
 {
@@ -33,7 +34,8 @@ public static class MatchReportBuilder
         SessionState raceSession,
         IReadOnlyList<RaceStarterSnapshot> raceStartersAtGreen,
         DateTime raceStartedAtUtc,
-        DateTime raceFinishedAtUtc)
+        DateTime raceFinishedAtUtc,
+        IReadOnlySet<ulong> disconnectedSteamIdsDuringRace)
     {
         // Read result rows from the ended race; use empty dict if Results is null.
         var results = raceSession.Results ?? new Dictionary<byte, EntryCarResult>();
@@ -56,13 +58,22 @@ public static class MatchReportBuilder
                 continue;
             }
 
-            participants.Add(BuildParticipantFromResult(starter, result, fieldSize, raceSession, results));
+            var disconnectedDuringRace = disconnectedSteamIdsDuringRace.Contains(starter.SteamId);
+            participants.Add(BuildParticipantFromResult(
+                starter,
+                result,
+                fieldSize,
+                raceSession,
+                results,
+                disconnectedDuringRace));
         }
 
         // When enabled, send only drivers who completed at least one lap — brain ranks everyone in participants[].
         var rankingParticipants = configuration.ExcludeZeroLapDriversFromRanking
             ? participants.Where(p => p.NumLaps > 0).ToList()
             : participants;
+
+        rankingParticipants = NormalizeFinishPositions(rankingParticipants);
 
         var rankingFieldSize = rankingParticipants.Count;
 
@@ -100,7 +111,8 @@ public static class MatchReportBuilder
         EntryCarResult result,
         int fieldSize,
         SessionState raceSession,
-        Dictionary<byte, EntryCarResult> results)
+        Dictionary<byte, EntryCarResult> results,
+        bool disconnectedDuringRace)
     {
         // Walk Results slot keys to find this driver's quali grid index.
         var gridSlotIndex = raceSession.Grid?
@@ -109,19 +121,24 @@ public static class MatchReportBuilder
                                    && slotResult.Guid == starter.SteamId)
             .index;
 
-        // No laps and no result row activity → treat as disqualified at last place (same as missing row).
-        if (result.NumLaps == 0)
+        var username = result.Name.Length > 0 ? result.Name : starter.Username;
+        var numLaps = (int)result.NumLaps;
+        var bestLapMs = numLaps > 0 ? ToLapMs(result.BestLap) : null;
+        var totalRaceTimeMs = result.TotalTime > 0 ? (int?)result.TotalTime : null;
+
+        // Zero laps or mid-race disconnect → DNF at the back (lap stats kept when the row still exists).
+        if (disconnectedDuringRace || result.NumLaps == 0)
         {
             return new MatchParticipantPayload
             {
                 SteamId = starter.SteamId.ToString(CultureInfo.InvariantCulture),
-                Username = result.Name.Length > 0 ? result.Name : starter.Username,
+                Username = username,
                 FinishPosition = fieldSize,
                 Dnf = true,
                 GridPosition = gridSlotIndex >= 0 ? gridSlotIndex + 1 : null,
-                NumLaps = 0,
-                BestLapMs = null,
-                TotalRaceTimeMs = null
+                NumLaps = numLaps,
+                BestLapMs = bestLapMs,
+                TotalRaceTimeMs = totalRaceTimeMs
             };
         }
 
@@ -131,16 +148,60 @@ public static class MatchReportBuilder
         return new MatchParticipantPayload
         {
             SteamId = starter.SteamId.ToString(CultureInfo.InvariantCulture),
-            Username = result.Name.Length > 0 ? result.Name : starter.Username,
+            Username = username,
             FinishPosition = finishPosition,
-            // HasCompletedLastLap false → driver did not complete the final lap before overtime/end.
-            Dnf = !result.HasCompletedLastLap,
+            // One or more laps with a classified position — finisher even if overtime ended before the last lap.
+            Dnf = false,
             GridPosition = gridSlotIndex >= 0 ? gridSlotIndex + 1 : null,
-            NumLaps = (int)result.NumLaps,
-            BestLapMs = ToLapMs(result.BestLap),
-            TotalRaceTimeMs = result.TotalTime > 0 ? (int)result.TotalTime : null
+            NumLaps = numLaps,
+            BestLapMs = bestLapMs,
+            TotalRaceTimeMs = totalRaceTimeMs
         };
     }
+
+    /// <summary>
+    /// NormalizeFinishPositions — sort finishers by laps/time, assign dense ranks 1..N, tie all DNFs at last.
+    /// </summary>
+    private static List<MatchParticipantPayload> NormalizeFinishPositions(
+        IReadOnlyList<MatchParticipantPayload> participants)
+    {
+        if (participants.Count == 0)
+            return [];
+
+        var finishers = participants
+            .Where(p => !p.Dnf)
+            .OrderByDescending(p => p.NumLaps)
+            .ThenBy(p => p.TotalRaceTimeMs ?? int.MaxValue)
+            .ThenBy(p => p.BestLapMs ?? int.MaxValue)
+            .ThenBy(p => p.FinishPosition)
+            .ToList();
+
+        var dnfs = participants.Where(p => p.Dnf).ToList();
+        var dnfRank = finishers.Count > 0 ? finishers.Count + 1 : 1;
+
+        var normalized = new List<MatchParticipantPayload>(participants.Count);
+
+        for (var index = 0; index < finishers.Count; index++)
+            normalized.Add(WithFinishPosition(finishers[index], index + 1));
+
+        foreach (var dnf in dnfs)
+            normalized.Add(WithFinishPosition(dnf, dnfRank));
+
+        return normalized;
+    }
+
+    private static MatchParticipantPayload WithFinishPosition(MatchParticipantPayload participant, int finishPosition) =>
+        new()
+        {
+            SteamId = participant.SteamId,
+            Username = participant.Username,
+            FinishPosition = finishPosition,
+            Dnf = participant.Dnf,
+            GridPosition = participant.GridPosition,
+            NumLaps = participant.NumLaps,
+            BestLapMs = participant.BestLapMs,
+            TotalRaceTimeMs = participant.TotalRaceTimeMs
+        };
 
     /// <summary>
     /// BuildDisqualifiedParticipant — starter with no Results row; last place, DNF.
@@ -187,7 +248,7 @@ public static class MatchReportBuilder
 /// PeakWindowEvaluator — checks whether a UTC instant falls inside the configured local time window.
 ///
 /// Logic flow:
-/// 1. If PeakWindow.Enabled is false, return true (no time gate).
+/// 1. If PeakWindow.Enabled is false, return true (race counts 24/7 by time gate).
 /// 2. Convert instantUtc to local time using TimeZoneId.
 /// 3. Parse StartLocal and EndLocal as TimeSpan.
 /// 4. Compare local TimeOfDay to the window; if start &gt; end, treat window as overnight (wraps midnight).

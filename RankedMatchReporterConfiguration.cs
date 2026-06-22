@@ -60,6 +60,13 @@ public class RankedMatchReporterConfiguration : IValidateConfiguration<RankedMat
     [YamlMember(Description = "Still POST off-peak races with counted_for_ranked=false")]
     public bool ReportUncountedRaces { get; init; } = true;
 
+    [YamlMember(Description = "Broadcast race-start announcement at green when peak window allows a counted race (MinimumDriversForRanked not checked here)")]
+    public bool BroadcastRaceStartAnnouncement { get; init; } = true;
+
+    [YamlMember(Description = "Server chat at race green; one BroadcastChat per line (split on newline)")]
+    public string RaceStartAnnouncement { get; init; } =
+        "[Ranked Race Starting] Drive safe!\nSTAY TILL END: Abandoning mid-race counts as DNF (last place) and costs a lot of rating.";
+
     [YamlMember(Description = "Peak window for counted_for_ranked")]
     public PeakWindowConfiguration PeakWindow { get; init; } = new();
 }

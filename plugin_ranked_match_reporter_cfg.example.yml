@@ -22,6 +22,12 @@ MinimumDriversForRanked: 4
 ExcludeZeroLapDriversFromRanking: false
 ReportUncountedRaces: true
 
+# Broadcast at race green when this race can count (peak window only; min drivers not checked).
+BroadcastRaceStartAnnouncement: true
+RaceStartAnnouncement: |
+  [Ranked Race Starting] Drive safe!
+  STAY TILL END: Abandoning mid-race counts as DNF (last place) and costs a lot of rating.
+
 PeakWindow:
   Enabled: true
   TimeZoneId: America/Sao_Paulo

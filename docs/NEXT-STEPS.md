@@ -19,7 +19,7 @@ Planned in repo: [`docs/roadmap/planned/ranked-system/deferred.md`](../../../../
 
 | Item | Summary |
 |------|---------|
-| **Chat automessages** | Broadcast ranked window times (e.g. before peak, at race end). |
+| **Peak-window schedule chat** | Timed reminders before/after ranked window (race-start broadcast is shipped) |
 | **Late-join noclip** | `ranked_spectator` via `CollisionPenaltiesManager`; unify RaceStartNoclip first. |
 | **POST retry** | Stable `match_id`, retry failed ingest. |
 | **Weather category** | Add field when ingest schema adds it. |

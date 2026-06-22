@@ -1,3 +1,4 @@
+using AssettoServer.Network.Tcp;
 using AssettoServer.Server;
 using AssettoServer.Server.Configuration;
 using AssettoServer.Shared.Model;
@@ -13,11 +14,13 @@ namespace RankedMatchReporterPlugin;
 /// 1. Subscribe to SessionChanged on startup.
 /// 2. When next session is Race, schedule a snapshot at green flag (StartTime + delay).
 /// 3. At green, store Steam ID + username for each grid slot with a connected driver — authoritative starter list.
-/// 4. When previous session was Race and race-over was sent, copy that starter list and build payload from Results.
-/// 5. Starters missing from Results at race end are reported as DNF at last place; mid-race joiners are never in the starter list.
+/// 4. At green, broadcast race-start announcement when peak window says this race can count (PeakWindow.Enabled false = always).
+/// 5. When previous session was Race and race-over was sent, copy that starter list and build payload from Results.
+/// 6. Starters missing from Results at race end are reported as DNF at last place; mid-race joiners are never in the starter list.
+/// 7. Track disconnects during the race so abandoners are DNF even when they completed laps before leaving.
 ///
-/// Deferred (not implemented here): chat ranked-window messages, late-join noclip, pit-lane gate at green — see docs/NEXT-STEPS.md.
-/// State held between sessions: _raceStartersAtGreen, _raceStartedAtUtc (DateTime?).
+/// Deferred (not implemented here): late-join noclip, pit-lane gate at green — see docs/NEXT-STEPS.md.
+/// State held between sessions: _raceStartersAtGreen, _raceStartedAtUtc (DateTime?), _disconnectedSteamIdsDuringRace.
 /// </summary>
 public sealed class RankedMatchReporterFeature : IDisposable
 {
@@ -32,6 +35,7 @@ public sealed class RankedMatchReporterFeature : IDisposable
     private readonly RankedRaceReportState _reportState;
 
     private List<RaceStarterSnapshot> _raceStartersAtGreen = new();
+    private readonly HashSet<ulong> _disconnectedSteamIdsDuringRace = new();
     private DateTime? _raceStartedAtUtc;
     private CancellationTokenSource? _raceStartSnapshotScheduler;
 
@@ -51,6 +55,8 @@ public sealed class RankedMatchReporterFeature : IDisposable
         _reportState = reportState;
 
         _sessionManager.SessionChanged += OnSessionChanged;
+        _entryCarManager.ClientDisconnected += OnClientDisconnectedDuringRace;
+        _entryCarManager.ClientConnected += OnClientConnectedDuringRace;
 
         Log.Information(
             "RankedMatchReporterPlugin: league={LeagueId} server={ServerId} dryRun={DryRun}",
@@ -113,7 +119,8 @@ public sealed class RankedMatchReporterFeature : IDisposable
             raceSession,
             raceStartersAtGreen,
             startedAt,
-            finishedAt);
+            finishedAt,
+            _disconnectedSteamIdsDuringRace);
 
         if (payload.Participants.Count == 0)
         {
@@ -185,6 +192,7 @@ public sealed class RankedMatchReporterFeature : IDisposable
             return;
 
         _raceStartedAtUtc = DateTime.UtcNow;
+        _disconnectedSteamIdsDuringRace.Clear();
 
         // Read race grid list; keep slots that have a client with a non-zero Steam ID.
         var gridCars = session.Grid ?? _entryCarManager.EntryCars;
@@ -196,6 +204,32 @@ public sealed class RankedMatchReporterFeature : IDisposable
         Log.Information(
             "RankedMatchReporterPlugin: race start snapshot ({DriverCount} drivers at green)",
             _raceStartersAtGreen.Count);
+
+        MaybeBroadcastRaceStartAnnouncement();
+    }
+
+    /// <summary>
+    /// MaybeBroadcastRaceStartAnnouncement — chat lines at green when peak window allows this race to count.
+    /// </summary>
+    private void MaybeBroadcastRaceStartAnnouncement()
+    {
+        if (!_configuration.BroadcastRaceStartAnnouncement)
+            return;
+
+        var raceStartUtc = _raceStartedAtUtc ?? DateTime.UtcNow;
+        if (!PeakWindowEvaluator.IsInPeakWindow(_configuration.PeakWindow, raceStartUtc))
+            return;
+
+        var message = _configuration.RaceStartAnnouncement;
+        if (string.IsNullOrWhiteSpace(message))
+            return;
+
+        foreach (var line in message.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length > 0)
+                _entryCarManager.BroadcastChat(trimmed);
+        }
     }
 
     /// <summary>
@@ -213,6 +247,26 @@ public sealed class RankedMatchReporterFeature : IDisposable
         }
     }
 
+    private void OnClientDisconnectedDuringRace(ACTcpClient sender, EventArgs args)
+    {
+        if (_sessionManager.CurrentSession.Configuration.Type != SessionType.Race)
+            return;
+
+        if (!_raceStartersAtGreen.Any(starter => starter.SteamId == sender.Guid))
+            return;
+
+        _disconnectedSteamIdsDuringRace.Add(sender.Guid);
+    }
+
+    private void OnClientConnectedDuringRace(ACTcpClient sender, EventArgs args)
+    {
+        if (_sessionManager.CurrentSession.Configuration.Type != SessionType.Race)
+            return;
+
+        if (_raceStartersAtGreen.Any(starter => starter.SteamId == sender.Guid))
+            _disconnectedSteamIdsDuringRace.Remove(sender.Guid);
+    }
+
     private void CancelRaceStartSnapshotScheduler()
     {
         _raceStartSnapshotScheduler?.Cancel();
@@ -224,5 +278,7 @@ public sealed class RankedMatchReporterFeature : IDisposable
     {
         CancelRaceStartSnapshotScheduler();
         _sessionManager.SessionChanged -= OnSessionChanged;
+        _entryCarManager.ClientDisconnected -= OnClientDisconnectedDuringRace;
+        _entryCarManager.ClientConnected -= OnClientConnectedDuringRace;
     }
 }
