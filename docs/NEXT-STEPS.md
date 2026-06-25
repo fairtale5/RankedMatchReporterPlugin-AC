@@ -21,7 +21,7 @@ Planned in repo: [`docs/roadmap/planned/ranked-system/deferred.md`](../../../../
 |------|---------|
 | **Peak-window schedule chat** | Timed reminders before/after ranked window (race-start broadcast is shipped) |
 | **Late-join noclip** | `ranked_spectator` via `CollisionPenaltiesManager`; unify RaceStartNoclip first. |
-| **POST retry** | Stable `match_id`, retry failed ingest. |
+| **POST retry** | Stable `match_id`, retry failed ingest. Design: [`docs/roadmap/planned/ranked-system/ingest-outbox.md`](../../../../docs/roadmap/planned/ranked-system/ingest-outbox.md) |
 | **Weather category** | Add field when ingest schema adds it. |
 
 **Not in this plugin v1:** harsher ranked penalties (CollisionPenaltiesPlugin), off-track noclip (PenaltyReporterNoClip + penalties plugin), preset warmup switch.
