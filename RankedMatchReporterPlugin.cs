@@ -2,6 +2,7 @@ using AssettoServer.Network.Tcp;
 using AssettoServer.Server;
 using AssettoServer.Server.Configuration;
 using Microsoft.Extensions.Hosting;
+using RankedMatchReporterPlugin.Classification;
 using Serilog;
 
 namespace RankedMatchReporterPlugin;
@@ -19,13 +20,15 @@ public class RankedMatchReporterPlugin : BackgroundService
 {
     private readonly BrainApiClient? _brainApi;
     private readonly RankedMatchReporterFeature? _feature;
+    private readonly TimedRaceClassificationFeature? _classification;
     private readonly RankedJoinWelcomeFeature? _joinWelcome;
 
     public RankedMatchReporterPlugin(
         RankedMatchReporterConfiguration configuration,
         ACServerConfiguration serverConfiguration,
         SessionManager sessionManager,
-        EntryCarManager entryCarManager)
+        EntryCarManager entryCarManager,
+        ACServer server)
     {
         if (!configuration.Enabled)
         {
@@ -35,13 +38,25 @@ public class RankedMatchReporterPlugin : BackgroundService
 
         _brainApi = new BrainApiClient(configuration);
         var reportState = new RankedRaceReportState();
+        var disconnectedSteamIds = new HashSet<ulong>();
+
         _feature = new RankedMatchReporterFeature(
             configuration,
             serverConfiguration,
             sessionManager,
             entryCarManager,
             _brainApi,
-            reportState);
+            reportState,
+            disconnectedSteamIds);
+
+        _classification = new TimedRaceClassificationFeature(
+            configuration,
+            sessionManager,
+            entryCarManager,
+            server,
+            disconnectedSteamIds);
+
+        _feature.SetClassificationFeature(_classification);
 
         _joinWelcome = new RankedJoinWelcomeFeature(
             configuration,
@@ -68,6 +83,7 @@ public class RankedMatchReporterPlugin : BackgroundService
     public override void Dispose()
     {
         _feature?.Dispose();
+        _classification?.Dispose();
         _joinWelcome?.Dispose();
         _brainApi?.Dispose();
         base.Dispose();

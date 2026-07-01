@@ -2,6 +2,7 @@ using System.Globalization;
 using AssettoServer.Server;
 using AssettoServer.Server.Configuration;
 using AssettoServer.Shared.Model;
+using RankedMatchReporterPlugin.Classification;
 using RankedMatchReporterPlugin.Models;
 
 namespace RankedMatchReporterPlugin;
@@ -29,6 +30,89 @@ public static class MatchReportBuilder
     private const uint InvalidLapSentinel = 999999999;
 
     public static MatchReportPayload Build(
+        RankedMatchReporterConfiguration configuration,
+        ACServerConfiguration serverConfiguration,
+        SessionState raceSession,
+        IReadOnlyList<RaceStarterSnapshot> raceStartersAtGreen,
+        DateTime raceStartedAtUtc,
+        DateTime raceFinishedAtUtc,
+        IReadOnlySet<ulong> disconnectedSteamIdsDuringRace,
+        RaceClassificationResult? timedRaceClassification = null)
+    {
+        var useClassification = configuration.TimedRaceClassificationEnabled
+            && raceSession.Configuration.IsTimedRace
+            && timedRaceClassification is { IsUsable: true };
+
+        if (useClassification)
+        {
+            return BuildFromTimedClassification(
+                configuration,
+                serverConfiguration,
+                raceSession,
+                raceStartersAtGreen,
+                raceStartedAtUtc,
+                raceFinishedAtUtc,
+                timedRaceClassification!);
+        }
+
+        return BuildLegacy(
+            configuration,
+            serverConfiguration,
+            raceSession,
+            raceStartersAtGreen,
+            raceStartedAtUtc,
+            raceFinishedAtUtc,
+            disconnectedSteamIdsDuringRace);
+    }
+
+    private static MatchReportPayload BuildFromTimedClassification(
+        RankedMatchReporterConfiguration configuration,
+        ACServerConfiguration serverConfiguration,
+        SessionState raceSession,
+        IReadOnlyList<RaceStarterSnapshot> raceStartersAtGreen,
+        DateTime raceStartedAtUtc,
+        DateTime raceFinishedAtUtc,
+        RaceClassificationResult timedRaceClassification)
+    {
+        var results = raceSession.Results ?? new Dictionary<byte, EntryCarResult>();
+        var classificationBySteam = timedRaceClassification.Participants
+            .ToDictionary(p => p.SteamId);
+
+        var participants = new List<MatchParticipantPayload>();
+
+        foreach (var starter in raceStartersAtGreen)
+        {
+            if (!classificationBySteam.TryGetValue(starter.SteamId, out var row))
+                continue;
+
+            var gridSlotIndex = ResolveGridSlotIndex(raceSession, results, starter.SteamId);
+
+            participants.Add(new MatchParticipantPayload
+            {
+                SteamId = starter.SteamId.ToString(CultureInfo.InvariantCulture),
+                Username = row.Username.Length > 0 ? row.Username : starter.Username,
+                FinishPosition = row.FinishPosition,
+                Dnf = row.Dnf,
+                GridPosition = gridSlotIndex >= 0 ? gridSlotIndex + 1 : null,
+                NumLaps = row.NumLaps,
+                BestLapMs = row.BestLapMs,
+                TotalRaceTimeMs = row.TotalRaceTimeMs
+            });
+        }
+
+        var rankingParticipants = configuration.ExcludeZeroLapDriversFromRanking
+            ? participants.Where(p => p.NumLaps > 0).ToList()
+            : participants;
+
+        return WrapPayload(
+            configuration,
+            serverConfiguration,
+            raceStartedAtUtc,
+            raceFinishedAtUtc,
+            rankingParticipants);
+    }
+
+    private static MatchReportPayload BuildLegacy(
         RankedMatchReporterConfiguration configuration,
         ACServerConfiguration serverConfiguration,
         SessionState raceSession,
@@ -75,22 +159,34 @@ public static class MatchReportBuilder
 
         rankingParticipants = NormalizeFinishPositions(rankingParticipants);
 
+        return WrapPayload(
+            configuration,
+            serverConfiguration,
+            raceStartedAtUtc,
+            raceFinishedAtUtc,
+            rankingParticipants);
+    }
+
+    private static MatchReportPayload WrapPayload(
+        RankedMatchReporterConfiguration configuration,
+        ACServerConfiguration serverConfiguration,
+        DateTime raceStartedAtUtc,
+        DateTime raceFinishedAtUtc,
+        List<MatchParticipantPayload> rankingParticipants)
+    {
         var rankingFieldSize = rankingParticipants.Count;
 
         var inPeakWindow = PeakWindowEvaluator.IsInPeakWindow(
             configuration.PeakWindow,
             raceStartedAtUtc);
-        // countedForRanked uses drivers in the payload (after zero-lap filter when enabled).
         var countedForRanked = rankingFieldSize >= configuration.MinimumDriversForRanked
             && (!configuration.PeakWindow.Enabled || inPeakWindow);
 
-        // Track/layout strings come from server cfg, not from the session object.
         var track = serverConfiguration.Server.Track;
         var layout = serverConfiguration.Server.TrackConfig ?? "";
 
         return new MatchReportPayload
         {
-            // UUID v7 embeds creation time (sortable, debuggable). ULID would need a text column in Postgres.
             MatchId = Guid.CreateVersion7().ToString(),
             LeagueId = configuration.LeagueId,
             ServerId = configuration.ServerId,
@@ -101,6 +197,20 @@ public static class MatchReportBuilder
             CountedForRanked = countedForRanked,
             Participants = rankingParticipants
         };
+    }
+
+    private static int ResolveGridSlotIndex(
+        SessionState raceSession,
+        Dictionary<byte, EntryCarResult> results,
+        ulong steamId)
+    {
+        var gridSlotIndex = raceSession.Grid?
+            .Select((car, index) => (car, index))
+            .FirstOrDefault(x => results.TryGetValue(x.car.SessionId, out var slotResult)
+                                   && slotResult.Guid == steamId)
+            .index;
+
+        return gridSlotIndex ?? -1;
     }
 
     /// <summary>

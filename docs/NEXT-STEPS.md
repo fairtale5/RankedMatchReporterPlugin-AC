@@ -11,6 +11,8 @@ Get **match reporting** working end to end:
 
 Details: [`REPORTING-TO-BRAIN.md`](REPORTING-TO-BRAIN.md)
 
+**Next ranked work (timed races):** [timed-race-classification-and-hud.md](../../../../docs/roadmap/planned/timed-race-classification-and-hud.md) — phase 1 shipped in plugin (`Classification/`). Public results table deferred: [ranked-race-results-public-table.md](../../../../docs/roadmap/planned/ranked-race-results-public-table.md).
+
 ---
 
 ## Deferred (after v1)

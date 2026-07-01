@@ -2,6 +2,7 @@ using AssettoServer.Network.Tcp;
 using AssettoServer.Server;
 using AssettoServer.Server.Configuration;
 using AssettoServer.Shared.Model;
+using RankedMatchReporterPlugin.Classification;
 using RankedMatchReporterPlugin.Models;
 using Serilog;
 
@@ -33,9 +34,11 @@ public sealed class RankedMatchReporterFeature : IDisposable
     private readonly EntryCarManager _entryCarManager;
     private readonly BrainApiClient _brainApi;
     private readonly RankedRaceReportState _reportState;
+    private readonly HashSet<ulong> _disconnectedSteamIdsDuringRace;
+
+    private TimedRaceClassificationFeature? _classification;
 
     private List<RaceStarterSnapshot> _raceStartersAtGreen = new();
-    private readonly HashSet<ulong> _disconnectedSteamIdsDuringRace = new();
     private DateTime? _raceStartedAtUtc;
     private CancellationTokenSource? _raceStartSnapshotScheduler;
 
@@ -45,7 +48,8 @@ public sealed class RankedMatchReporterFeature : IDisposable
         SessionManager sessionManager,
         EntryCarManager entryCarManager,
         BrainApiClient brainApi,
-        RankedRaceReportState reportState)
+        RankedRaceReportState reportState,
+        HashSet<ulong> disconnectedSteamIdsDuringRace)
     {
         _configuration = configuration;
         _serverConfiguration = serverConfiguration;
@@ -53,6 +57,7 @@ public sealed class RankedMatchReporterFeature : IDisposable
         _entryCarManager = entryCarManager;
         _brainApi = brainApi;
         _reportState = reportState;
+        _disconnectedSteamIdsDuringRace = disconnectedSteamIdsDuringRace;
 
         _sessionManager.SessionChanged += OnSessionChanged;
         _entryCarManager.ClientDisconnected += OnClientDisconnectedDuringRace;
@@ -64,6 +69,9 @@ public sealed class RankedMatchReporterFeature : IDisposable
             configuration.ServerId,
             configuration.DryRun);
     }
+
+    public void SetClassificationFeature(TimedRaceClassificationFeature classification) =>
+        _classification = classification;
 
     /// <summary>
     /// OnSessionChanged — schedule starter snapshot at green; report results when a race session ends.
@@ -120,7 +128,19 @@ public sealed class RankedMatchReporterFeature : IDisposable
             raceStartersAtGreen,
             startedAt,
             finishedAt,
-            _disconnectedSteamIdsDuringRace);
+            _disconnectedSteamIdsDuringRace,
+            _classification?.GetFinalResult());
+
+        if (_configuration.TimedRaceClassificationEnabled
+            && raceSession.Configuration.IsTimedRace
+            && _classification?.GetFinalResult() is { IsUsable: true })
+        {
+            Log.Information("RankedMatchReporterPlugin: using timed-race classification for ingest");
+        }
+        else if (_configuration.TimedRaceClassificationEnabled && raceSession.Configuration.IsTimedRace)
+        {
+            Log.Warning("RankedMatchReporterPlugin: timed classification unavailable — using legacy RacePos");
+        }
 
         if (payload.Participants.Count == 0)
         {
@@ -204,6 +224,8 @@ public sealed class RankedMatchReporterFeature : IDisposable
         Log.Information(
             "RankedMatchReporterPlugin: race start snapshot ({DriverCount} drivers at green)",
             _raceStartersAtGreen.Count);
+
+        _classification?.OnRaceGreen(_raceStartersAtGreen);
 
         MaybeBroadcastRaceStartAnnouncement();
     }

@@ -4,7 +4,14 @@ using Qmmands;
 
 namespace RankedMatchReporterPlugin;
 
-/// <summary>In-game /score — private ranked notice on demand (same text as join welcome).</summary>
+/// <summary>
+/// RankedMatchReporterCommandModule — in-game /score command module.
+///
+/// Logic flow:
+/// 1. Player sends /score while connected.
+/// 2. Delegate to RankedMatchReporterPlugin.SendScoreNoticeAsync.
+/// 3. Same private rating notice as join welcome (GET serv-brain).
+/// </summary>
 public class RankedMatchReporterCommandModule : ACModuleBase
 {
     private readonly RankedMatchReporterPlugin _plugin;
