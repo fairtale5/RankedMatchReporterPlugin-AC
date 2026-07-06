@@ -141,6 +141,36 @@ public sealed class TimedRaceClassificationFeature : IDisposable
                 TimedRaceClassificationEngine.ToLapMs(result.BestLap)));
         }
 
+        // Index result rows by Steam id for lookup when the car slot no longer holds a client.
+        var resultsBySteamId = results.Values
+            .Where(r => r.Guid != 0)
+            .GroupBy(r => r.Guid)
+            .ToDictionary(g => g.Key, g => g.First());
+
+        // Walk starters who left the race; add each finished-a-lap abandoner as a back-of-grid probe.
+        foreach (var starter in _startersAtGreen)
+        {
+            if (_state.ClassifiedFinishers.ContainsKey(starter.SteamId))
+                continue;
+
+            if (!_disconnectedSteamIdsDuringRace.Contains(starter.SteamId))
+                continue;
+
+            // Read the driver's last result row; skip drivers with zero laps so AFK players are not punished.
+            if (!resultsBySteamId.TryGetValue(starter.SteamId, out var result) || result.NumLaps < 1)
+                continue;
+
+            // Force laps to 1 and distance to 0 so the abandoner counts but sorts behind every driver still on track.
+            var username = result.Name.Length > 0 ? result.Name : starter.Username;
+            stragglers.Add(new TimedRaceClassificationEngine.StragglerProbe(
+                starter.SteamId,
+                username,
+                1,
+                0f,
+                null,
+                null));
+        }
+
         var starters = _startersAtGreen;
 
         _finalResult = TimedRaceClassificationEngine.FinalizeAtRaceOver(
