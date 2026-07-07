@@ -39,8 +39,7 @@ public static class MatchReportBuilder
         IReadOnlySet<ulong> disconnectedSteamIdsDuringRace,
         RaceClassificationResult? timedRaceClassification = null)
     {
-        var useClassification = configuration.TimedRaceClassificationEnabled
-            && raceSession.Configuration.IsTimedRace
+        var useClassification = raceSession.Configuration.IsTimedRace
             && timedRaceClassification is { IsUsable: true };
 
         if (useClassification)

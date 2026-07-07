@@ -34,6 +34,5 @@ PeakWindow:
   StartLocal: "17:30"
   EndLocal: "22:00"
 
-TimedRaceClassificationEnabled: true
 BroadcastFinishPositionChat: true
 FinishPositionAnnouncement: "[RANKED FINISH] P{Position} — {Name}"

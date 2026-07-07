@@ -70,9 +70,6 @@ public class RankedMatchReporterConfiguration : IValidateConfiguration<RankedMat
     [YamlMember(Description = "Peak window for counted_for_ranked")]
     public PeakWindowConfiguration PeakWindow { get; init; } = new();
 
-    [YamlMember(Description = "Use lap-cap classification for timed races (fixes overtime position drift)")]
-    public bool TimedRaceClassificationEnabled { get; init; } = true;
-
     [YamlMember(Description = "Broadcast one chat line when a driver completes the cap lap count")]
     public bool BroadcastFinishPositionChat { get; init; } = true;
 

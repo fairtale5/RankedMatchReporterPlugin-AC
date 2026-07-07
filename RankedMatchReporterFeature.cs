@@ -131,13 +131,12 @@ public sealed class RankedMatchReporterFeature : IDisposable
             _disconnectedSteamIdsDuringRace,
             _classification?.GetFinalResult());
 
-        if (_configuration.TimedRaceClassificationEnabled
-            && raceSession.Configuration.IsTimedRace
+        if (raceSession.Configuration.IsTimedRace
             && _classification?.GetFinalResult() is { IsUsable: true })
         {
             Log.Information("RankedMatchReporterPlugin: using timed-race classification for ingest");
         }
-        else if (_configuration.TimedRaceClassificationEnabled && raceSession.Configuration.IsTimedRace)
+        else if (raceSession.Configuration.IsTimedRace)
         {
             Log.Warning("RankedMatchReporterPlugin: timed classification unavailable — using legacy RacePos");
         }

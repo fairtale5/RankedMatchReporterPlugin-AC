@@ -78,9 +78,6 @@ public sealed class TimedRaceClassificationFeature : IDisposable
 
     private void OnServerUpdate(ACServer sender, EventArgs args)
     {
-        if (!_configuration.TimedRaceClassificationEnabled)
-            return;
-
         var session = _sessionManager.CurrentSession;
         if (session.Configuration.Type != SessionType.Race || !session.Configuration.IsTimedRace)
             return;
@@ -216,9 +213,6 @@ public sealed class TimedRaceClassificationFeature : IDisposable
 
     private void OnLapCompleted(ACTcpClient client, LapCompletedEventArgs args)
     {
-        if (!_configuration.TimedRaceClassificationEnabled)
-            return;
-
         var session = _sessionManager.CurrentSession;
         if (session.Configuration.Type != SessionType.Race || !session.Configuration.IsTimedRace)
             return;
