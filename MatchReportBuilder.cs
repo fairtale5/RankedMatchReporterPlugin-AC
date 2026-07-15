@@ -21,7 +21,7 @@ namespace RankedMatchReporterPlugin;
 /// 3. Match each starter to a Results row by Steam ID; missing row, zero laps, or disconnect during race → DNF.
 /// 4. When ExcludeZeroLapDriversFromRanking is on, drop rows with num_laps=0 before ingest.
 /// 5. Renumber finish positions to 1..N with no gaps; all DNFs share the same last rank (tie).
-/// 6. Compare ranking field size and peak window to set counted_for_ranked.
+/// 6. Set counted_for_ranked from green-flag starter count (not post-filter payload size) and peak window.
 /// 7. Return DTO with new match_id (UUID v7) and ISO timestamps.
 /// </summary>
 public static class MatchReportBuilder
@@ -108,6 +108,7 @@ public static class MatchReportBuilder
             serverConfiguration,
             raceStartedAtUtc,
             raceFinishedAtUtc,
+            raceStartersAtGreen.Count,
             rankingParticipants);
     }
 
@@ -163,6 +164,7 @@ public static class MatchReportBuilder
             serverConfiguration,
             raceStartedAtUtc,
             raceFinishedAtUtc,
+            raceStartersAtGreen.Count,
             rankingParticipants);
     }
 
@@ -171,14 +173,14 @@ public static class MatchReportBuilder
         ACServerConfiguration serverConfiguration,
         DateTime raceStartedAtUtc,
         DateTime raceFinishedAtUtc,
+        int greenFlagStarterCount,
         List<MatchParticipantPayload> rankingParticipants)
     {
-        var rankingFieldSize = rankingParticipants.Count;
-
         var inPeakWindow = PeakWindowEvaluator.IsInPeakWindow(
             configuration.PeakWindow,
             raceStartedAtUtc);
-        var countedForRanked = rankingFieldSize >= configuration.MinimumDriversForRanked
+        // Min drivers is decided at green — mid-race leaves / zero-lap drops must not un-count the race.
+        var countedForRanked = greenFlagStarterCount >= configuration.MinimumDriversForRanked
             && (!configuration.PeakWindow.Enabled || inPeakWindow);
 
         var track = serverConfiguration.Server.Track;
