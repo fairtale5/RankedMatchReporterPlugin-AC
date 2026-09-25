@@ -8,7 +8,7 @@ namespace RankedMatchReporterPlugin.Classification;
 /// 2. LeaderLapsAtClock set when session clock expires (SessionOverFlag).
 /// 3. CapLaps set on first lap crossing above LeaderLapsAtClock.
 /// 4. ClassifiedFinishers grows on each cap-lap crossing.
-/// 5. FinalizedAtRaceOver set when stragglers are snapshotted at SendSessionOver.
+/// 5. FinalizedAtRaceOver set only after a full finish table is built (failed finalize may retry).
 /// </summary>
 public sealed class TimedRaceClassificationState
 {

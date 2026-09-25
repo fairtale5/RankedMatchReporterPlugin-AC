@@ -14,6 +14,8 @@ namespace RankedMatchReporterPlugin.Classification;
 /// 2. On ACServer.Update — snapshot LeaderLapsAtClock when clock expires; finalize stragglers at RaceOver.
 /// 3. On LapCompleted — assign P1..Pn when drivers hit cap lap count; broadcast one-line finish chat.
 /// 4. Expose RaceClassificationResult for MatchReportBuilder at session change.
+/// 5. Duplicate live slots for one Steam are collapsed before finalize (best progress); finalize must
+///    not wipe classified finishers if straggler merge fails.
 /// </summary>
 public sealed class TimedRaceClassificationFeature : IDisposable
 {
@@ -65,8 +67,12 @@ public sealed class TimedRaceClassificationFeature : IDisposable
         _hadRaceOverPacket = false;
 
         _starterSteamIds.Clear();
-        _startersAtGreen = starters.ToList();
-        foreach (var starter in starters)
+        // One starter row per Steam — two live slots at green must not double-count.
+        _startersAtGreen = starters
+            .GroupBy(s => s.SteamId)
+            .Select(g => g.First())
+            .ToList();
+        foreach (var starter in _startersAtGreen)
             _starterSteamIds.Add(starter.SteamId);
 
         foreach (var car in _entryCarManager.EntryCars)
@@ -93,13 +99,25 @@ public sealed class TimedRaceClassificationFeature : IDisposable
 
         var raceOverNow = session.HasSentRaceOverPacket;
         if (raceOverNow && !_hadRaceOverPacket)
+        {
             FinalizeAtRaceOver();
 
-        _hadRaceOverPacket = raceOverNow;
+            // Stop retrying after a usable table, a successful finalize flag, or nothing to classify.
+            if (_finalResult.IsUsable
+                || _state.FinalizedAtRaceOver
+                || _state.CapLaps == null
+                || _starterSteamIds.Count == 0)
+            {
+                _hadRaceOverPacket = true;
+            }
+        }
     }
 
     private void FinalizeAtRaceOver()
     {
+        if (_finalResult.IsUsable)
+            return;
+
         if (_starterSteamIds.Count == 0 || _state.CapLaps == null)
         {
             Log.Debug("RankedMatchReporterPlugin: timed classification skipped at race over (no cap set)");
@@ -138,11 +156,15 @@ public sealed class TimedRaceClassificationFeature : IDisposable
                 TimedRaceClassificationEngine.ToLapMs(result.BestLap)));
         }
 
-        // Index result rows by Steam id for lookup when the car slot no longer holds a client.
+        // Prefer the best progress row when the same Steam left results on more than one slot.
         var resultsBySteamId = results.Values
             .Where(r => r.Guid != 0)
             .GroupBy(r => r.Guid)
-            .ToDictionary(g => g.Key, g => g.First());
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(r => r.NumLaps)
+                    .ThenBy(r => r.TotalTime == 0 ? uint.MaxValue : r.TotalTime)
+                    .First());
 
         // Walk starters who left the race; add each finished-a-lap abandoner as a back-of-grid probe.
         foreach (var starter in _startersAtGreen)
@@ -151,6 +173,10 @@ public sealed class TimedRaceClassificationFeature : IDisposable
                 continue;
 
             if (!_disconnectedSteamIdsDuringRace.Contains(starter.SteamId))
+                continue;
+
+            // Skip if a live slot for this Steam already contributed a probe (still connected elsewhere).
+            if (stragglers.Any(s => s.SteamId == starter.SteamId))
                 continue;
 
             // Read the driver's last result row; skip drivers with zero laps so AFK players are not punished.
@@ -170,11 +196,34 @@ public sealed class TimedRaceClassificationFeature : IDisposable
 
         var starters = _startersAtGreen;
 
-        _finalResult = TimedRaceClassificationEngine.FinalizeAtRaceOver(
-            _state,
-            starters,
-            stragglers,
-            _disconnectedSteamIdsDuringRace);
+        try
+        {
+            _finalResult = TimedRaceClassificationEngine.FinalizeAtRaceOver(
+                _state,
+                starters,
+                stragglers,
+                _disconnectedSteamIdsDuringRace);
+        }
+        catch (Exception ex)
+        {
+            // Keep locked finishers even if straggler merge blows up — never fall back to empty.
+            Log.Error(
+                ex,
+                "RankedMatchReporterPlugin: timed classification finalize failed — keeping {Classified} classified finisher(s)",
+                _state.ClassifiedFinishers.Count);
+            _finalResult = TimedRaceClassificationEngine.BuildFromClassifiedOnly(_state);
+            if (_finalResult.IsUsable)
+                _state.FinalizedAtRaceOver = true;
+            else
+                _hadRaceOverPacket = true;
+        }
+
+        if (!_finalResult.IsUsable && _state.ClassifiedFinishers.Count > 0)
+        {
+            _finalResult = TimedRaceClassificationEngine.BuildFromClassifiedOnly(_state);
+            if (_finalResult.IsUsable)
+                _state.FinalizedAtRaceOver = true;
+        }
 
         Log.Information(
             "RankedMatchReporterPlugin: timed classification finalized at race over (cap={CapLaps}, classified={Classified}, total={Total})",

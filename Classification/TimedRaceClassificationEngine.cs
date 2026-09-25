@@ -7,7 +7,9 @@ namespace RankedMatchReporterPlugin.Classification;
 ///
 /// Logic flow:
 /// 1. TryRecordLapCrossing — cap detection and finish-order assignment on each counted lap.
-/// 2. FinalizeAtRaceOver — sort stragglers by NumLaps + spline; merge DNFs tied at last.
+/// 2. FinalizeAtRaceOver — dedupe stragglers by Steam ID (best progress), place classified
+///    finishers first, then stragglers by laps + spline, then DNFs tied at last.
+/// 3. Never throw on duplicate Steam IDs — one ranked row per Steam ID.
 /// </summary>
 public static class TimedRaceClassificationEngine
 {
@@ -34,9 +36,6 @@ public static class TimedRaceClassificationEngine
         if (state.FinalizedAtRaceOver)
             return default;
 
-        if (state.ClassifiedFinishers.ContainsKey(steamId))
-            return default;
-
         if (state.LeaderLapsAtClock == null)
             return default;
 
@@ -59,7 +58,60 @@ public static class TimedRaceClassificationEngine
         if (numLaps < cap)
             return default;
 
+        // Same Steam already locked (e.g. second live slot hits cap): demote behind other classified
+        // finishers and keep slower times (blocks multi-client "keep best place/time").
+        if (state.ClassifiedFinishers.TryGetValue(steamId, out var existing))
+        {
+            state.ClassifiedFinishers[steamId] = WithWorseClassifiedOutcome(
+                state,
+                existing,
+                totalRaceTimeMs,
+                bestLapMs);
+            return default;
+        }
+
         return Classify(state, steamId, username, numLaps, totalRaceTimeMs, bestLapMs);
+    }
+
+    /// <summary>
+    /// DeduplicateStragglersByBestProgress — one probe per Steam ID; keep most laps then distance.
+    /// </summary>
+    public static IReadOnlyList<StragglerProbe> DeduplicateStragglersByBestProgress(
+        IEnumerable<StragglerProbe> stragglers)
+    {
+        return stragglers
+            .GroupBy(s => s.SteamId)
+            .Select(group => group
+                .OrderByDescending(s => s.NumLaps + s.NormalizedPosition)
+                .ThenBy(s => s.TotalRaceTimeMs ?? int.MaxValue)
+                .ThenBy(s => s.BestLapMs ?? int.MaxValue)
+                .First())
+            .ToList();
+    }
+
+    /// <summary>
+    /// BuildFromClassifiedOnly — fallback when straggler merge fails; keep locked finishers only.
+    /// </summary>
+    public static RaceClassificationResult BuildFromClassifiedOnly(TimedRaceClassificationState state)
+    {
+        if (state.CapLaps == null || state.ClassifiedFinishers.Count == 0)
+            return RaceClassificationResult.NotUsed;
+
+        var rows = state.ClassifiedFinishers.Values
+            .OrderBy(f => f.FinishPosition)
+            .Select((finisher, index) => new ClassificationParticipantRow
+            {
+                SteamId = finisher.SteamId,
+                Username = finisher.Username,
+                FinishPosition = index + 1,
+                Dnf = false,
+                NumLaps = finisher.NumLaps,
+                TotalRaceTimeMs = finisher.TotalRaceTimeMs,
+                BestLapMs = finisher.BestLapMs
+            })
+            .ToList();
+
+        return new RaceClassificationResult(true, rows);
     }
 
     public static RaceClassificationResult FinalizeAtRaceOver(
@@ -71,18 +123,24 @@ public static class TimedRaceClassificationEngine
         if (state.CapLaps == null || state.FinalizedAtRaceOver)
             return RaceClassificationResult.NotUsed;
 
-        state.FinalizedAtRaceOver = true;
+        // One probe per Steam — duplicate live slots must not abort finalize.
+        var uniqueStragglers = DeduplicateStragglersByBestProgress(stragglers);
 
         var rows = new List<ClassificationParticipantRow>(starters.Count);
-        var classifiedCount = state.ClassifiedFinishers.Count;
 
-        foreach (var finisher in state.ClassifiedFinishers.Values.OrderBy(f => f.FinishPosition))
+        // Classified finishers first (crossing order); densify 1..N in case of gaps.
+        var classifiedOrdered = state.ClassifiedFinishers.Values
+            .OrderBy(f => f.FinishPosition)
+            .ToList();
+
+        for (var index = 0; index < classifiedOrdered.Count; index++)
         {
+            var finisher = classifiedOrdered[index];
             rows.Add(new ClassificationParticipantRow
             {
                 SteamId = finisher.SteamId,
                 Username = finisher.Username,
-                FinishPosition = finisher.FinishPosition,
+                FinishPosition = index + 1,
                 Dnf = false,
                 NumLaps = finisher.NumLaps,
                 TotalRaceTimeMs = finisher.TotalRaceTimeMs,
@@ -90,10 +148,12 @@ public static class TimedRaceClassificationEngine
             });
         }
 
-        var nextPosition = classifiedCount + 1;
+        var nextPosition = rows.Count + 1;
+        var classifiedSteamIds = state.ClassifiedFinishers.Keys.ToHashSet();
 
-        var orderedStragglers = stragglers
-            .Where(s => !state.ClassifiedFinishers.ContainsKey(s.SteamId))
+        // Connected stragglers: best progress per Steam, not already classified, not marked disconnected.
+        var orderedStragglers = uniqueStragglers
+            .Where(s => !classifiedSteamIds.Contains(s.SteamId))
             .Where(s => !disconnectedDuringRace.Contains(s.SteamId))
             .OrderByDescending(s => s.NumLaps + s.NormalizedPosition)
             .ThenBy(s => s.TotalRaceTimeMs ?? int.MaxValue)
@@ -114,10 +174,18 @@ public static class TimedRaceClassificationEngine
             });
         }
 
-        var placedSteamIds = rows.Select(r => r.SteamId).ToHashSet();
-        var stragglerBySteam = stragglers.ToDictionary(s => s.SteamId);
+        // Index probes by Steam without throwing when a caller still passed duplicates.
+        var stragglerBySteam = uniqueStragglers
+            .GroupBy(s => s.SteamId)
+            .ToDictionary(g => g.Key, g => g.First());
 
-        foreach (var starter in starters)
+        var placedSteamIds = rows.Select(r => r.SteamId).ToHashSet();
+        var uniqueStarters = starters
+            .GroupBy(s => s.SteamId)
+            .Select(g => g.First())
+            .ToList();
+
+        foreach (var starter in uniqueStarters)
         {
             if (placedSteamIds.Contains(starter.SteamId))
                 continue;
@@ -155,6 +223,8 @@ public static class TimedRaceClassificationEngine
             });
         }
 
+        // Mark finalized only after a full table exists — a throw before this must allow retry.
+        state.FinalizedAtRaceOver = true;
         return new RaceClassificationResult(true, normalized);
     }
 
@@ -186,5 +256,36 @@ public static class TimedRaceClassificationEngine
         };
 
         return new LapCrossingOutcome(true, position);
+    }
+
+    /// <summary>
+    /// WithWorseClassifiedOutcome — second cap crossing for the same Steam: sort after every other
+    /// classified finisher (densify at race over rewrites 1..N) and keep slower times.
+    /// </summary>
+    private static ClassifiedFinisherSnapshot WithWorseClassifiedOutcome(
+        TimedRaceClassificationState state,
+        ClassifiedFinisherSnapshot existing,
+        int? totalRaceTimeMs,
+        int? bestLapMs)
+    {
+        var lastClassifiedPlace = state.ClassifiedFinishers.Values.Max(f => f.FinishPosition);
+        return new ClassifiedFinisherSnapshot
+        {
+            SteamId = existing.SteamId,
+            Username = existing.Username,
+            FinishPosition = lastClassifiedPlace + 1,
+            NumLaps = existing.NumLaps,
+            TotalRaceTimeMs = MaxNullableTime(existing.TotalRaceTimeMs, totalRaceTimeMs),
+            BestLapMs = MaxNullableTime(existing.BestLapMs, bestLapMs)
+        };
+    }
+
+    private static int? MaxNullableTime(int? a, int? b)
+    {
+        if (a == null)
+            return b;
+        if (b == null)
+            return a;
+        return Math.Max(a.Value, b.Value);
     }
 }

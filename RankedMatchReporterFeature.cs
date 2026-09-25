@@ -214,10 +214,16 @@ public sealed class RankedMatchReporterFeature : IDisposable
         _disconnectedSteamIdsDuringRace.Clear();
 
         // Read race grid list; keep slots that have a client with a non-zero Steam ID.
+        // One starter per Steam — two live slots at green must not create duplicate ranked rows.
         var gridCars = session.Grid ?? _entryCarManager.EntryCars;
         _raceStartersAtGreen = gridCars
             .Where(car => car.Client?.Guid is ulong guid && guid != 0)
-            .Select(car => new RaceStarterSnapshot(car.Client!.Guid, car.Client!.Name ?? ""))
+            .GroupBy(car => car.Client!.Guid)
+            .Select(group =>
+            {
+                var car = group.First();
+                return new RaceStarterSnapshot(car.Client!.Guid, car.Client!.Name ?? "");
+            })
             .ToList();
 
         Log.Information(
@@ -271,6 +277,10 @@ public sealed class RankedMatchReporterFeature : IDisposable
     private void OnClientDisconnectedDuringRace(ACTcpClient sender, EventArgs args)
     {
         if (_sessionManager.CurrentSession.Configuration.Type != SessionType.Race)
+            return;
+
+        // Results screen / post race-over leave is not a mid-race abandon.
+        if (_sessionManager.CurrentSession.HasSentRaceOverPacket)
             return;
 
         if (!_raceStartersAtGreen.Any(starter => starter.SteamId == sender.Guid))

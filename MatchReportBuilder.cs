@@ -17,12 +17,14 @@ namespace RankedMatchReporterPlugin;
 ///
 /// Logic flow:
 /// 1. Read Results dictionary from the ended race session.
-/// 2. Walk the green-flag starter list (one participant row per starter).
-/// 3. Match each starter to a Results row by Steam ID; missing row, zero laps, or disconnect during race → DNF.
+/// 2. Walk the green-flag starter list (one participant row per Steam ID).
+/// 3. Match each starter to a Results row by Steam ID (most laps when several slots exist);
+///    missing row, zero laps, or disconnect during race → DNF.
 /// 4. When ExcludeZeroLapDriversFromRanking is on, drop rows with num_laps=0 before ingest.
 /// 5. Renumber finish positions to 1..N with no gaps; all DNFs share the same last rank (tie).
 /// 6. Set counted_for_ranked from green-flag starter count (not post-filter payload size) and peak window.
 /// 7. Return DTO with new match_id (UUID v7) and ISO timestamps.
+/// 8. Timed races prefer RaceClassificationResult (already one row per Steam) when usable.
 /// </summary>
 public static class MatchReportBuilder
 {
@@ -74,13 +76,19 @@ public static class MatchReportBuilder
         RaceClassificationResult timedRaceClassification)
     {
         var results = raceSession.Results ?? new Dictionary<byte, EntryCarResult>();
+        // One classification row per Steam (engine already dedupes; GroupBy keeps ingest safe).
         var classificationBySteam = timedRaceClassification.Participants
-            .ToDictionary(p => p.SteamId);
+            .GroupBy(p => p.SteamId)
+            .ToDictionary(g => g.Key, g => g.First());
 
         var participants = new List<MatchParticipantPayload>();
+        var seenSteamIds = new HashSet<ulong>();
 
         foreach (var starter in raceStartersAtGreen)
         {
+            if (!seenSteamIds.Add(starter.SteamId))
+                continue;
+
             if (!classificationBySteam.TryGetValue(starter.SteamId, out var row))
                 continue;
 
@@ -126,15 +134,23 @@ public static class MatchReportBuilder
         var participants = new List<MatchParticipantPayload>();
         var fieldSize = raceStartersAtGreen.Count;
 
-        // Index Results by Steam ID so we can look up each starter without scanning every slot each time.
+        // One Results row per Steam: most laps, then shortest total time (stuck login + other slot keeps progress).
         var resultsBySteamId = results.Values
             .Where(r => r.Guid != 0)
             .GroupBy(r => r.Guid)
-            .ToDictionary(g => g.Key, g => g.First());
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(r => r.NumLaps)
+                    .ThenBy(r => r.TotalTime == 0 ? uint.MaxValue : r.TotalTime)
+                    .First());
 
         // Walk green-flag starters only — mid-race joiners never appear in this list.
+        var seenSteamIds = new HashSet<ulong>();
         foreach (var starter in raceStartersAtGreen)
         {
+            if (!seenSteamIds.Add(starter.SteamId))
+                continue;
+
             if (!resultsBySteamId.TryGetValue(starter.SteamId, out var result))
             {
                 // Starter left or slot was reused — no Results row for this Steam ID → last place DNF.
